@@ -21,7 +21,9 @@ export default class TutorialScene {
     this.levels = Array.from({ length: 20 }, (_, i) => ({
       id: i + 1,
       name: `教学关卡${i + 1}`,
-      unlocked: i === 0
+      unlocked: i === 0,
+      completed: false,       // 是否完成教学
+      rewardClaimed: false    // 是否已领取宝箱
     }));
   }
 
@@ -35,6 +37,53 @@ export default class TutorialScene {
   onEnter() {
     this.scrollY = 0;
     this.lastTouchY = null;
+  }
+
+  claimReward(level) {
+    if (!level.completed) {
+      wx.showToast({
+        title: '请先完成教学关卡',
+        icon: 'none'
+      });
+      return;
+    }
+
+    if (level.rewardClaimed) {
+      wx.showToast({
+        title: '宝箱已领取',
+        icon: 'none'
+      });
+      return;
+    }
+
+    level.rewardClaimed = true;
+
+    wx.showToast({
+      title: `已领取第${level.id}关皮肤宝箱`,
+      icon: 'success'
+    });
+  }
+
+  enterLevel(index) {
+    const level = this.levels[index];
+
+    if (!level.unlocked) {
+      wx.showToast({
+        title: `第${index + 1}关暂未开放`,
+        icon: 'none'
+      });
+      return;
+    }
+
+    if (index === 0) {
+      this.gameScene.startLevel1();
+      this.sceneManager.switchTo(this.gameScene);
+    } else {
+      wx.showToast({
+        title: `第${index + 1}关暂未开放`,
+        icon: 'none'
+      });
+    }
   }
 
   onTouchStart(e) {
@@ -51,6 +100,8 @@ export default class TutorialScene {
 
     const btnX = 30;
     const btnW = SCREEN_WIDTH - 60;
+    const leftW = btnW * 0.68;
+    const rightW = btnW - leftW;
     const btnH = 56;
     const gap = 16;
     const startY = SAFE_TOP + 90;
@@ -58,16 +109,17 @@ export default class TutorialScene {
     for (let i = 0; i < this.levels.length; i++) {
       const itemY = startY + i * (btnH + gap) - this.scrollY;
 
-      if (inRect(x, y, btnX, itemY, btnW, btnH)) {
-        if (i === 0) {
-          this.gameScene.startLevel1();
-          this.sceneManager.switchTo(this.gameScene);
-        } else {
-          wx.showToast({
-            title: `第${i + 1}关暂未开放`,
-            icon: 'none'
-          });
-        }
+      if (itemY + btnH < SAFE_TOP + 80 || itemY > SCREEN_HEIGHT) continue;
+
+      // 左半：进入关卡
+      if (inRect(x, y, btnX, itemY, leftW, btnH)) {
+        this.enterLevel(i);
+        return;
+      }
+
+      // 右半：领取宝箱
+      if (inRect(x, y, btnX + leftW, itemY, rightW, btnH)) {
+        this.claimReward(this.levels[i]);
         return;
       }
     }
@@ -107,6 +159,7 @@ export default class TutorialScene {
 
     const headerBottom = SAFE_TOP + 80;
 
+    // 顶部标题区
     ctx.fillStyle = '#f5f1e8';
     ctx.fillRect(0, 0, SCREEN_WIDTH, headerBottom);
 
@@ -118,6 +171,8 @@ export default class TutorialScene {
 
     const btnX = 30;
     const btnW = SCREEN_WIDTH - 60;
+    const leftW = btnW * 0.68;
+    const rightW = btnW - leftW;
     const btnH = 56;
     const gap = 16;
     const startY = SAFE_TOP + 90;
@@ -133,21 +188,59 @@ export default class TutorialScene {
 
       if (y + btnH < headerBottom || y > SCREEN_HEIGHT) continue;
 
-      const bgColor = level.unlocked ? '#ffffff' : '#d9d9d9';
-      const text = level.unlocked
+      // 左半颜色和文字
+      const leftBg = level.unlocked ? '#ffffff' : '#d9d9d9';
+      const leftText = level.unlocked
         ? `第${level.id}关`
         : `第${level.id}关（未解锁）`;
+      const leftTextColor = level.unlocked ? '#333333' : '#888888';
 
+      // 右半颜色和文字
+      let rightBg = '#d9d9d9';
+      let rightText = '未完成';
+      let rightTextColor = '#888888';
+
+      if (level.completed && !level.rewardClaimed) {
+        rightBg = '#ffe08a';
+        rightText = '领取宝箱';
+        rightTextColor = '#6b4b00';
+      } else if (level.completed && level.rewardClaimed) {
+        rightBg = '#cdeccf';
+        rightText = '已领取';
+        rightTextColor = '#2d6a34';
+      }
+
+      // 左半按钮
       drawButton(
         btnX,
         y,
-        btnW,
+        leftW,
         btnH,
-        bgColor,
-        text,
+        leftBg,
+        leftText,
         20,
-        level.unlocked ? '#333333' : '#888888'
+        leftTextColor
       );
+
+      // 右半按钮
+      drawButton(
+        btnX + leftW,
+        y,
+        rightW,
+        btnH,
+        rightBg,
+        rightText,
+        18,
+        rightTextColor
+      );
+
+      // 中间分隔线
+      ctx.strokeStyle = '#bbbbbb';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(btnX + leftW, y + 6);
+      ctx.lineTo(btnX + leftW, y + btnH - 6);
+      ctx.stroke();
     }
 
     ctx.restore();
