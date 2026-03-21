@@ -1,4 +1,6 @@
 import { drawButton, inRect } from '../utils/ui';
+const { boardConfig, pieceConfig, pieceMap } = require('../config/game-data');
+const { createPiece, getPieceDef, runAdvanceForPiece } = require('../engine/piece-engine');
 
 const ctx = canvas.getContext('2d');
 
@@ -13,10 +15,6 @@ const DESTROYED = -2;
 const BLACK = 1;
 const WHITE = 2;
 
-const PIECE_NORMAL = 'normal';
-const PIECE_CAVALRY = 'cavalry';
-const PIECE_BOMBER = 'bomber';
-
 const DIRS = {
   U: { dr: -1, dc: 0 },
   D: { dr: 1, dc: 0 },
@@ -24,30 +22,25 @@ const DIRS = {
   R: { dr: 0, dc: 1 }
 };
 
-const BOARD_SHAPE = [
-  [0,0,0,1,1,0,0,0,1,1,0,0,0],
-  [0,0,1,1,1,1,0,1,1,1,1,0,0],
-  [0,1,1,1,1,1,1,1,1,1,1,1,0],
-  [1,1,1,1,1,1,1,1,1,1,1,1,1],
-  [1,1,1,1,1,1,1,1,1,1,1,1,1],
-  [0,1,1,1,1,1,1,1,1,1,1,1,0],
-  [0,0,1,1,1,1,1,1,1,1,1,0,0],
-  [0,0,0,1,1,1,1,1,1,1,0,0,0],
-  [0,0,0,0,1,1,1,1,1,0,0,0,0],
-  [0,0,0,0,0,1,1,1,0,0,0,0,0],
-  [0,0,0,0,0,0,1,0,0,0,0,0,0]
-];
-
+const BOARD_SHAPE = boardConfig.shape;
 const BOARD_ROWS = BOARD_SHAPE.length;
 const BOARD_COLS = BOARD_SHAPE[0].length;
-
-function createPiece(color, type = PIECE_NORMAL, dir = null) {
-  return { color, type, dir };
-}
 
 export default class GoGameScene {
   constructor(sceneManager) {
     this.sceneManager = sceneManager;
+    this.EMPTY = EMPTY;
+    this.INVALID = INVALID;
+    this.DESTROYED = DESTROYED;
+    this.DIRS = DIRS;
+
+    this.boardConfig = boardConfig;
+    this.pieceConfig = pieceConfig;
+    this.pieceMap = pieceMap;
+    this.specialPieces = pieceConfig.pieces.filter((p) => p.selectable);
+
+    this.maxCardSlots = 3;
+
     this.initSafeLayout();
     this.resetGame();
   }
@@ -63,19 +56,8 @@ export default class GoGameScene {
     this.safeTop = safeTop;
     this.row1Y = capsuleBottom + 12;
 
-    this.backBtn = {
-      x: 24,
-      y: this.row1Y,
-      w: 100,
-      h: 40
-    };
-
-    this.restartBtn = {
-      x: SCREEN_WIDTH - 24 - 100,
-      y: this.row1Y,
-      w: 100,
-      h: 40
-    };
+    this.backBtn = { x: 24, y: this.row1Y, w: 100, h: 40 };
+    this.restartBtn = { x: SCREEN_WIDTH - 24 - 100, y: this.row1Y, w: 100, h: 40 };
 
     this.titleY = this.row1Y + 40 + 26;
     this.turnTextY = this.titleY + 42;
@@ -83,21 +65,43 @@ export default class GoGameScene {
 
     this.boardPaddingTop = this.msgTextY + 35;
     this.boardPaddingSide = 36;
-    this.boardPaddingBottom = 150;
+    this.boardPaddingBottom = 210;
 
-    this.cavalryBtn = {
-      x: SCREEN_WIDTH / 2 - 150,
-      y: SCREEN_HEIGHT - 96,
-      w: 120,
-      h: 42
-    };
+    this.cardSlotsLayout = this.buildCardSlotLayout();
+  }
 
-    this.bomberBtn = {
-      x: SCREEN_WIDTH / 2 + 30,
-      y: SCREEN_HEIGHT - 96,
-      w: 120,
-      h: 42
-    };
+  buildCardSlotLayout() {
+    const list = [];
+    const count = this.maxCardSlots;
+    const gap = 14;
+    const slotW = 96;
+    const slotH = 126;
+    const totalWidth = count * slotW + (count - 1) * gap;
+    const startX = (SCREEN_WIDTH - totalWidth) / 2;
+    const y = SCREEN_HEIGHT - slotH - 52;
+
+    for (let i = 0; i < count; i++) {
+      list.push({
+        index: i,
+        x: startX + i * (slotW + gap),
+        y,
+        w: slotW,
+        h: slotH
+      });
+    }
+
+    return list;
+  }
+
+  createInitialCardLoadout() {
+    const loadout = [];
+
+    for (let i = 0; i < this.maxCardSlots; i++) {
+      const piece = this.specialPieces[i];
+      loadout.push(piece ? { type: piece.id, used: false } : null);
+    }
+
+    return loadout;
   }
 
   resetGame() {
@@ -114,9 +118,11 @@ export default class GoGameScene {
 
     this.previousBoardKey = this.getBoardKey(this.board);
 
-    this.nextPieceType = PIECE_NORMAL;
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
     this.pendingPlacement = null;
     this.directionButtons = null;
+
+    this.cardLoadout = this.createInitialCardLoadout();
 
     this.calcBoardLayout();
   }
@@ -147,10 +153,7 @@ export default class GoGameScene {
     const spanCols = Math.max(1, maxCol - minCol);
     const spanRows = Math.max(1, maxRow - minRow);
 
-    this.cellSize = Math.min(
-      usableWidth / spanCols,
-      usableHeight / spanRows
-    );
+    this.cellSize = Math.min(usableWidth / spanCols, usableHeight / spanRows);
 
     const centerCol = (minCol + maxCol) / 2;
     const centerRow = (minRow + maxRow) / 2;
@@ -166,12 +169,39 @@ export default class GoGameScene {
     const points = [];
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
-        if (BOARD_SHAPE[row][col] === 1) {
-          points.push([row, col]);
-        }
+        if (BOARD_SHAPE[row][col] === 1) points.push([row, col]);
       }
     }
     return points;
+  }
+
+  getCardDataBySlot(slotIndex) {
+    return this.cardLoadout[slotIndex] || null;
+  }
+
+  findAvailableCardSlotByType(type) {
+    for (let i = 0; i < this.cardLoadout.length; i++) {
+      const card = this.cardLoadout[i];
+      if (card && card.type === type && !card.used) return i;
+    }
+    return -1;
+  }
+
+  hasAvailableCard(type) {
+    return this.findAvailableCardSlotByType(type) >= 0;
+  }
+
+  consumeCard(type) {
+    const slotIndex = this.findAvailableCardSlotByType(type);
+    if (slotIndex < 0) return false;
+
+    this.cardLoadout[slotIndex].used = true;
+    return true;
+  }
+
+  clearPendingSelection() {
+    this.pendingPlacement = null;
+    this.directionButtons = null;
   }
 
   onTouchStart(e) {
@@ -180,9 +210,7 @@ export default class GoGameScene {
     const y = touch.clientY;
 
     if (inRect(x, y, this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h)) {
-      if (this.homeScene) {
-        this.sceneManager.switchTo(this.homeScene);
-      }
+      if (this.homeScene) this.sceneManager.switchTo(this.homeScene);
       return;
     }
 
@@ -191,13 +219,13 @@ export default class GoGameScene {
       return;
     }
 
-    if (inRect(x, y, this.cavalryBtn.x, this.cavalryBtn.y, this.cavalryBtn.w, this.cavalryBtn.h)) {
-      this.toggleNextSpecialPiece(PIECE_CAVALRY);
-      return;
-    }
+    for (const slot of this.cardSlotsLayout) {
+      if (!inRect(x, y, slot.x, slot.y, slot.w, slot.h)) continue;
 
-    if (inRect(x, y, this.bomberBtn.x, this.bomberBtn.y, this.bomberBtn.w, this.bomberBtn.h)) {
-      this.toggleNextSpecialPiece(PIECE_BOMBER);
+      const card = this.getCardDataBySlot(slot.index);
+      if (!card || card.used) return;
+
+      this.toggleNextSpecialPiece(card.type);
       return;
     }
 
@@ -212,45 +240,54 @@ export default class GoGameScene {
     const point = this.screenToBoard(x, y);
     if (!point) {
       if (this.pendingPlacement) {
-        this.pendingPlacement = null;
-        this.directionButtons = null;
+        this.clearPendingSelection();
         this.statusMessage = '已取消方向选择';
       }
       return;
     }
 
-    if (this.nextPieceType === PIECE_CAVALRY || this.nextPieceType === PIECE_BOMBER) {
+    const selectedDef = getPieceDef(this.pieceMap, this.nextPieceType);
+    if (selectedDef.needsDirection) {
       this.startSpecialPlacement(point.row, point.col, this.nextPieceType);
       return;
     }
 
     this.tryPlacePiece(point.row, point.col, {
       color: this.currentPlayer,
-      type: PIECE_NORMAL,
+      type: this.nextPieceType,
       dir: null
     });
   }
 
   toggleNextSpecialPiece(type) {
+    if (!this.hasAvailableCard(type)) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.clearPendingSelection();
+      this.statusMessage = '这张卡已经用掉了';
+      return;
+    }
+
     if (this.pendingPlacement) {
-      this.pendingPlacement = null;
-      this.directionButtons = null;
+      this.clearPendingSelection();
     }
 
-    this.nextPieceType =
-      this.nextPieceType === type ? PIECE_NORMAL : type;
+    const defaultType = this.pieceConfig.defaultPieceType || 'normal';
+    this.nextPieceType = this.nextPieceType === type ? defaultType : type;
 
-    if (this.nextPieceType === PIECE_CAVALRY) {
-      this.statusMessage = '下一手为骑兵：先点落点，再选方向';
-    } else if (this.nextPieceType === PIECE_BOMBER) {
-      this.statusMessage = '下一手为自爆兵：先点落点，再选方向';
-    } else {
-      this.statusMessage = '已切回普通棋子';
-    }
+    const pieceDef = getPieceDef(this.pieceMap, this.nextPieceType);
+    this.statusMessage = pieceDef.needsDirection
+      ? `已选中${pieceDef.name}卡：先点落点，再选方向`
+      : `已切回${pieceDef.name}`;
   }
 
   startSpecialPlacement(row, col, type) {
     if (!this.isPlayablePoint(row, col)) return;
+
+    if (!this.hasAvailableCard(type)) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = '这张卡已经用掉了';
+      return;
+    }
 
     if (this.board[row][col] !== EMPTY) {
       this.statusMessage = '此处已有棋子';
@@ -265,29 +302,20 @@ export default class GoGameScene {
     };
 
     this.directionButtons = this.buildDirectionButtons(row, col);
-
-    this.statusMessage =
-      type === PIECE_CAVALRY
-        ? '请选择骑兵方向'
-        : '请选择自爆兵方向';
+    const pieceDef = getPieceDef(this.pieceMap, type);
+    this.statusMessage = `请选择${pieceDef.name}方向`;
   }
 
   confirmSpecialPlacement(dir) {
     if (!this.pendingPlacement) return;
 
     const { row, col, color, type } = this.pendingPlacement;
+    const ok = this.tryPlacePiece(row, col, { color, type, dir });
 
-    const ok = this.tryPlacePiece(row, col, {
-      color,
-      type,
-      dir
-    });
-
-    this.pendingPlacement = null;
-    this.directionButtons = null;
+    this.clearPendingSelection();
 
     if (ok) {
-      this.nextPieceType = PIECE_NORMAL;
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
     }
   }
 
@@ -304,26 +332,22 @@ export default class GoGameScene {
     this.lastMove = { row, col };
     this.lastCaptured = result.captured || [];
 
-    const skipKey = piece.type === PIECE_CAVALRY ? `${row},${col}` : null;
-    this.advanceCavalryPhase(skipKey);
-
-    const bombResult = this.advanceBomberPhase();
-    if (bombResult.exploded.length > 0) {
-      this.lastCaptured = this.lastCaptured.concat(bombResult.exploded);
+    const pieceDef = getPieceDef(this.pieceMap, piece.type);
+    if (pieceDef.selectable) {
+      this.consumeCard(piece.type);
     }
+
+    this.advanceSpecialPieces({
+      skipNewlyPlacedType: piece.type,
+      skipNewlyPlacedKey: `${row},${col}`
+    });
 
     this.currentPlayer = this.getOpponent(this.currentPlayer);
 
-    if (bombResult.triggeredCount > 0) {
-      this.statusMessage = `自爆兵引爆 ${bombResult.triggeredCount} 枚，并清空 ${bombResult.destroyedCellsCount} 格`;
-    } else if (bombResult.disabledCount > 0) {
-      this.statusMessage = `有 ${bombResult.disabledCount} 枚自爆兵失去爆炸能力`;
-    } else if (result.captured.length > 0) {
+    if (result.captured.length > 0) {
       this.statusMessage = `提子 ${result.captured.length} 枚`;
-    } else if (piece.type === PIECE_CAVALRY) {
-      this.statusMessage = `骑兵已落子，方向 ${piece.dir}`;
-    } else if (piece.type === PIECE_BOMBER) {
-      this.statusMessage = `自爆兵已落子，方向 ${piece.dir}`;
+    } else if (pieceDef.needsDirection) {
+      this.statusMessage = `${pieceDef.name}已落子，方向 ${piece.dir}`;
     } else {
       this.statusMessage = '';
     }
@@ -331,14 +355,63 @@ export default class GoGameScene {
     return true;
   }
 
-  simulatePlacePiece(sourceBoard, row, col, piece, player) {
-    if (!this.isPlayablePoint(row, col)) {
-      return { ok: false, message: '不可落子' };
+  advanceSpecialPieces(options = {}) {
+    const queue = [];
+
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = this.board[row][col];
+        if (!this.isPiece(cell)) continue;
+
+        const pieceDef = getPieceDef(this.pieceMap, cell.type);
+        const order = pieceDef.advanceOrder || 0;
+        const key = `${row},${col}`;
+
+        if (
+          options.skipNewlyPlacedType === cell.type &&
+          options.skipNewlyPlacedKey === key &&
+          pieceDef.behavior?.type === 'move_forward'
+        ) {
+          continue;
+        }
+
+        if (pieceDef.behavior?.type && pieceDef.behavior.type !== 'none') {
+          queue.push({ row, col, piece: { ...cell }, pieceDef, order });
+        }
+      }
     }
 
-    if (sourceBoard[row][col] !== EMPTY) {
-      return { ok: false, message: '此处已有棋子' };
+    queue.sort((a, b) => a.order - b.order);
+
+    let totalExploded = 0;
+    let totalDisabled = 0;
+    let totalDestroyedCells = 0;
+
+    for (const item of queue) {
+      const cell = this.board[item.row][item.col];
+      if (!this.isPiece(cell)) continue;
+      if (cell.type !== item.piece.type) continue;
+
+      const out = runAdvanceForPiece(this, item.row, item.col, cell, item.pieceDef);
+      if (!out) continue;
+
+      if (out.exploded) totalExploded += out.exploded.length;
+      if (out.disabledCount) totalDisabled += out.disabledCount;
+      if (out.destroyedCellsCount) totalDestroyedCells += out.destroyedCellsCount;
     }
+
+    this.previousBoardKey = this.getBoardKey(this.board);
+
+    if (totalDestroyedCells > 0) {
+      this.statusMessage = `特殊兵种触发，清空 ${totalDestroyedCells} 格`;
+    } else if (totalDisabled > 0) {
+      this.statusMessage = `有 ${totalDisabled} 枚特殊兵种失去能力`;
+    }
+  }
+
+  simulatePlacePiece(sourceBoard, row, col, piece, player) {
+    if (!this.isPlayablePoint(row, col)) return { ok: false, message: '不可落子' };
+    if (sourceBoard[row][col] !== EMPTY) return { ok: false, message: '此处已有棋子' };
 
     const opponent = this.getOpponent(player);
     const beforeBoardKey = this.getBoardKey(sourceBoard);
@@ -347,7 +420,6 @@ export default class GoGameScene {
     nextBoard[row][col] = createPiece(piece.color, piece.type, piece.dir);
 
     let totalCaptured = [];
-
     const neighbors = this.getNeighborsForBoard(nextBoard, row, col);
     const visitedEnemyGroups = new Set();
 
@@ -359,26 +431,17 @@ export default class GoGameScene {
       if (visitedEnemyGroups.has(enemyKey)) continue;
 
       const group = this.getGroup(nextBoard, nr, nc);
-      for (const [gr, gc] of group) {
-        visitedEnemyGroups.add(`${gr},${gc}`);
-      }
+      for (const [gr, gc] of group) visitedEnemyGroups.add(`${gr},${gc}`);
 
       const liberties = this.getLiberties(nextBoard, group);
-      if (liberties.size === 0) {
-        totalCaptured = totalCaptured.concat(group);
-      }
+      if (liberties.size === 0) totalCaptured = totalCaptured.concat(group);
     }
 
-    if (totalCaptured.length > 0) {
-      this.removeGroup(nextBoard, totalCaptured);
-    }
+    if (totalCaptured.length > 0) this.removeGroup(nextBoard, totalCaptured);
 
     const selfGroup = this.getGroup(nextBoard, row, col);
     const selfLiberties = this.getLiberties(nextBoard, selfGroup);
-
-    if (selfLiberties.size === 0) {
-      return { ok: false, message: '禁入点：不可自杀' };
-    }
+    if (selfLiberties.size === 0) return { ok: false, message: '禁入点：不可自杀' };
 
     const nextBoardKey = this.getBoardKey(nextBoard);
     if (nextBoardKey === this.previousBoardKey) {
@@ -393,159 +456,15 @@ export default class GoGameScene {
     };
   }
 
-  advanceCavalryPhase(skipKey = null) {
-    const cavalryList = [];
-
-    for (let row = 0; row < BOARD_ROWS; row++) {
-      for (let col = 0; col < BOARD_COLS; col++) {
-        const cell = this.board[row][col];
-        if (this.isPiece(cell) && cell.type === PIECE_CAVALRY) {
-          const key = `${row},${col}`;
-          if (key !== skipKey) {
-            cavalryList.push({ row, col, dir: cell.dir, color: cell.color });
-          }
-        }
-      }
-    }
-
-    for (const item of cavalryList) {
-      this.advanceSingleCavalry(item.row, item.col, item.dir);
-    }
-
-    this.previousBoardKey = this.getBoardKey(this.board);
-  }
-
-  advanceSingleCavalry(row, col, dir) {
-    const cell = this.board[row][col];
-    if (!this.isPiece(cell)) return;
-    if (cell.type !== PIECE_CAVALRY) return;
-    if (cell.dir !== dir) return;
-
-    const move = DIRS[dir];
-    if (!move) return;
-
-    const nr = row + move.dr;
-    const nc = col + move.dc;
-
-    if (!this.isPlayablePoint(nr, nc)) {
-      this.board[row][col] = createPiece(cell.color, PIECE_NORMAL, null);
-      return;
-    }
-
-    if (this.isPiece(this.board[nr][nc])) {
-      this.board[nr][nc] = EMPTY;
-    }
-
-    this.board[nr][nc] = createPiece(cell.color, PIECE_CAVALRY, dir);
-    this.board[row][col] = EMPTY;
-
-    this.lastMove = { row: nr, col: nc };
-  }
-
-  advanceBomberPhase() {
-    const bomberList = [];
-
-    for (let row = 0; row < BOARD_ROWS; row++) {
-      for (let col = 0; col < BOARD_COLS; col++) {
-        const cell = this.board[row][col];
-        if (this.isPiece(cell) && cell.type === PIECE_BOMBER) {
-          bomberList.push({ row, col, dir: cell.dir, color: cell.color });
-        }
-      }
-    }
-
-    const exploded = [];
-    let triggeredCount = 0;
-    let disabledCount = 0;
-    let destroyedCellsCount = 0;
-
-    for (const item of bomberList) {
-      const cell = this.board[item.row][item.col];
-      if (!this.isPiece(cell)) continue;
-      if (cell.type !== PIECE_BOMBER) continue;
-
-      if (this.bomberHasEnemyAdjacent(item.row, item.col, cell.color)) {
-        this.board[item.row][item.col] = createPiece(cell.color, PIECE_NORMAL, null);
-        disabledCount++;
-        continue;
-      }
-
-      const area = this.getBomberBlastArea(item.row, item.col, cell.dir);
-      for (const [r, c] of area) {
-        if (this.isPiece(this.board[r][c])) {
-          exploded.push([r, c]);
-        }
-        if (this.board[r][c] !== DESTROYED) {
-          destroyedCellsCount++;
-        }
-        this.board[r][c] = DESTROYED;
-      }
-
-      triggeredCount++;
-      this.lastMove = { row: item.row, col: item.col };
-    }
-
-    this.previousBoardKey = this.getBoardKey(this.board);
-
-    return {
-      exploded,
-      triggeredCount,
-      disabledCount,
-      destroyedCellsCount
-    };
-  }
-
-  bomberHasEnemyAdjacent(row, col, color) {
+  hasEnemyAdjacent(row, col, color) {
     const enemy = this.getOpponent(color);
     const neighbors = this.getNeighborsForBoard(this.board, row, col);
 
     for (const [nr, nc] of neighbors) {
       const cell = this.board[nr][nc];
-      if (this.isPiece(cell) && cell.color === enemy) {
-        return true;
-      }
+      if (this.isPiece(cell) && cell.color === enemy) return true;
     }
-
     return false;
-  }
-
-  getBomberBlastArea(row, col, dir) {
-    const offsetsByDir = {
-      U: [
-        [0, -1], [0, 0], [0, 1],
-        [-1, -1], [-1, 0], [-1, 1]
-      ],
-      D: [
-        [0, -1], [0, 0], [0, 1],
-        [1, -1], [1, 0], [1, 1]
-      ],
-      L: [
-        [-1, 0], [0, 0], [1, 0],
-        [-1, -1], [0, -1], [1, -1]
-      ],
-      R: [
-        [-1, 0], [0, 0], [1, 0],
-        [-1, 1], [0, 1], [1, 1]
-      ]
-    };
-
-    const offsets = offsetsByDir[dir] || offsetsByDir.U;
-    const result = [];
-    const seen = new Set();
-
-    for (const [dr, dc] of offsets) {
-      const nr = row + dr;
-      const nc = col + dc;
-      if (!this.isBoardShapeCell(nr, nc)) continue;
-
-      const key = `${nr},${nc}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      result.push([nr, nc]);
-    }
-
-    return result;
   }
 
   isInside(row, col) {
@@ -582,40 +501,24 @@ export default class GoGameScene {
   getBoardKey(board) {
     return board
       .map((row) =>
-        row
-          .map((cell) => {
-            if (cell === INVALID) return 'X';
-            if (cell === DESTROYED) return '#';
-            if (cell === EMPTY) return '.';
-
-            let typeCode = 'N';
-            if (cell.type === PIECE_CAVALRY) typeCode = 'C';
-            if (cell.type === PIECE_BOMBER) typeCode = 'B';
-
-            return `${cell.color}${typeCode}${cell.dir || '_'}`;
-          })
-          .join(',')
+        row.map((cell) => {
+          if (cell === INVALID) return 'X';
+          if (cell === DESTROYED) return '#';
+          if (cell === EMPTY) return '.';
+          return `${cell.color}${cell.type}${cell.dir || '_'}`;
+        }).join(',')
       )
       .join('|');
   }
 
   getNeighborsForBoard(board, row, col) {
-    const dirs = [
-      [-1, 0],
-      [1, 0],
-      [0, -1],
-      [0, 1]
-    ];
-
+    const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
     const result = [];
+
     for (const [dr, dc] of dirs) {
       const nr = row + dr;
       const nc = col + dc;
-      if (
-        this.isInside(nr, nc) &&
-        BOARD_SHAPE[nr][nc] === 1 &&
-        board[nr][nc] !== DESTROYED
-      ) {
+      if (this.isInside(nr, nc) && BOARD_SHAPE[nr][nc] === 1 && board[nr][nc] !== DESTROYED) {
         result.push([nr, nc]);
       }
     }
@@ -642,7 +545,6 @@ export default class GoGameScene {
 
         const key = `${nr},${nc}`;
         if (visited.has(key)) continue;
-
         visited.add(key);
         stack.push([nr, nc]);
       }
@@ -653,16 +555,12 @@ export default class GoGameScene {
 
   getLiberties(board, group) {
     const liberties = new Set();
-
     for (const [row, col] of group) {
       const neighbors = this.getNeighborsForBoard(board, row, col);
       for (const [nr, nc] of neighbors) {
-        if (board[nr][nc] === EMPTY) {
-          liberties.add(`${nr},${nc}`);
-        }
+        if (board[nr][nc] === EMPTY) liberties.add(`${nr},${nc}`);
       }
     }
-
     return liberties;
   }
 
@@ -700,11 +598,7 @@ export default class GoGameScene {
       }
     }
 
-    if (nearest && minDist <= threshold) {
-      return nearest;
-    }
-
-    return null;
+    return nearest && minDist <= threshold ? nearest : null;
   }
 
   buildDirectionButtons(row, col) {
@@ -722,7 +616,6 @@ export default class GoGameScene {
 
   hitDirectionButton(x, y) {
     if (!this.directionButtons) return null;
-
     for (const dir of ['U', 'D', 'L', 'R']) {
       const btn = this.directionButtons[dir];
       const dx = x - btn.x;
@@ -730,7 +623,6 @@ export default class GoGameScene {
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist <= btn.size * 1.2) return dir;
     }
-
     return null;
   }
 
@@ -738,7 +630,6 @@ export default class GoGameScene {
 
   render() {
     ctx.clearRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-
     this.drawBackground();
     this.drawTopBar();
     this.drawBoard();
@@ -753,33 +644,17 @@ export default class GoGameScene {
   }
 
   drawTopBar() {
-    drawButton(
-      this.backBtn.x,
-      this.backBtn.y,
-      this.backBtn.w,
-      this.backBtn.h,
-      '#34495e',
-      '返回'
-    );
-
-    drawButton(
-      this.restartBtn.x,
-      this.restartBtn.y,
-      this.restartBtn.w,
-      this.restartBtn.h,
-      '#27ae60',
-      '重开'
-    );
+    drawButton(this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h, '#34495e', '返回');
+    drawButton(this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h, '#27ae60', '重开');
 
     ctx.fillStyle = '#1f1f1f';
     ctx.font = 'bold 28px Arial';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('爱心棋盘', SCREEN_WIDTH / 2, this.titleY);
+    ctx.fillText(this.boardConfig.name || '棋盘', SCREEN_WIDTH / 2, this.titleY);
 
     ctx.font = '22px Arial';
-    const text = this.currentPlayer === BLACK ? '当前落子：黑棋' : '当前落子：白棋';
-    ctx.fillText(text, SCREEN_WIDTH / 2, this.turnTextY);
+    ctx.fillText(this.currentPlayer === BLACK ? '当前落子：黑棋' : '当前落子：白棋', SCREEN_WIDTH / 2, this.turnTextY);
 
     ctx.font = '16px Arial';
     ctx.fillStyle = '#5b3a1f';
@@ -787,15 +662,14 @@ export default class GoGameScene {
   }
 
   drawBoard() {
-    this.drawHeartBackground();
+    this.drawBoardBackground();
     this.drawBoardLines();
     this.drawBoardPoints();
     this.drawDestroyedCells();
   }
 
-  drawHeartBackground() {
+  drawBoardBackground() {
     const padding = this.cellSize * 0.7;
-
     const left = this.originX + this.minCol * this.cellSize - padding;
     const top = this.originY + this.minRow * this.cellSize - padding;
     const right = this.originX + this.maxCol * this.cellSize + padding;
@@ -812,7 +686,6 @@ export default class GoGameScene {
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
         if (!this.canDrawConnection(row, col)) continue;
-
         const current = this.boardToScreen(row, col);
 
         if (this.canDrawConnection(row, col + 1)) {
@@ -840,16 +713,14 @@ export default class GoGameScene {
 
   drawBoardPoints() {
     ctx.fillStyle = '#2c1e12';
-
     const centerRow = Math.round((this.minRow + this.maxRow) / 2);
     const centerCol = Math.round((this.minCol + this.maxCol) / 2);
 
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
         if (!this.isPlayablePoint(row, col)) continue;
-
         const { x, y } = this.boardToScreen(row, col);
-        const isTengen = (row === centerRow && col === centerCol);
+        const isTengen = row === centerRow && col === centerCol;
         const radius = isTengen ? Math.max(4.5, this.cellSize * 0.16) : 0;
 
         ctx.beginPath();
@@ -863,18 +734,12 @@ export default class GoGameScene {
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
         if (this.board[row][col] !== DESTROYED) continue;
-
         const { x, y } = this.boardToScreen(row, col);
         const size = this.cellSize * 1.08;
 
         ctx.save();
         ctx.fillStyle = '#cfa96a';
-        ctx.fillRect(
-          x - size / 2,
-          y - size / 2,
-          size,
-          size
-        );
+        ctx.fillRect(x - size / 2, y - size / 2, size, size);
         ctx.restore();
       }
     }
@@ -885,7 +750,6 @@ export default class GoGameScene {
       for (let col = 0; col < BOARD_COLS; col++) {
         const cell = this.board[row][col];
         if (!this.isPiece(cell)) continue;
-
         const { x, y } = this.boardToScreen(row, col);
         this.drawOnePiece(x, y, cell, row, col);
       }
@@ -894,12 +758,10 @@ export default class GoGameScene {
 
   drawOnePiece(x, y, cell, row, col, isPreview = false) {
     const r = this.cellSize * 0.36;
+    const pieceDef = getPieceDef(this.pieceMap, cell.type);
 
     ctx.save();
-
-    if (isPreview) {
-      ctx.globalAlpha = 0.65;
-    }
+    if (isPreview) ctx.globalAlpha = 0.65;
 
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
@@ -915,27 +777,21 @@ export default class GoGameScene {
       ctx.stroke();
     }
 
-    if (cell.type === PIECE_CAVALRY || cell.type === PIECE_BOMBER) {
+    if (pieceDef.symbol) {
       ctx.font = `${Math.max(14, this.cellSize * 0.42)}px Arial`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillStyle = cell.color === BLACK ? '#fff' : '#222';
+      ctx.fillText(pieceDef.symbol, x, y + 1);
 
-      const symbol = cell.type === PIECE_CAVALRY ? '🐴' : '💥';
-      ctx.fillText(symbol, x, y + 1);
-
-      this.drawDirectionMarker(x, y, r, cell.dir, cell.color);
+      if (pieceDef.needsDirection) {
+        this.drawDirectionMarker(x, y, r, cell.dir, cell.color);
+      }
     }
 
-    if (
-      !isPreview &&
-      this.lastMove &&
-      this.lastMove.row === row &&
-      this.lastMove.col === col
-    ) {
+    if (!isPreview && this.lastMove && this.lastMove.row === row && this.lastMove.col === col) {
       const t = Date.now() / 200;
       const pulse = 4 + Math.sin(t) * 2;
-
       ctx.beginPath();
       ctx.arc(x, y, Math.max(3, pulse), 0, Math.PI * 2);
       ctx.fillStyle = 'red';
@@ -982,21 +838,12 @@ export default class GoGameScene {
     const { row, col, color, type } = this.pendingPlacement;
     const { x, y } = this.boardToScreen(row, col);
 
-    this.drawOnePiece(
-      x,
-      y,
-      createPiece(color, type, null),
-      row,
-      col,
-      true
-    );
-
+    this.drawOnePiece(x, y, createPiece(color, type, null), row, col, true);
     this.drawDirectionButtons();
   }
 
   drawDirectionButtons() {
     if (!this.directionButtons) return;
-
     for (const dir of ['U', 'D', 'L', 'R']) {
       const btn = this.directionButtons[dir];
       this.drawTriangleButton(btn.x, btn.y, btn.size, dir);
@@ -1005,8 +852,8 @@ export default class GoGameScene {
 
   drawTriangleButton(x, y, size, dir) {
     ctx.save();
-
     ctx.beginPath();
+
     if (dir === 'U') {
       ctx.moveTo(x, y - size);
       ctx.lineTo(x - size, y + size);
@@ -1024,47 +871,109 @@ export default class GoGameScene {
       ctx.lineTo(x - size, y - size);
       ctx.lineTo(x - size, y + size);
     }
-    ctx.closePath();
 
+    ctx.closePath();
     ctx.fillStyle = 'rgba(52, 152, 219, 0.9)';
     ctx.fill();
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 2;
     ctx.stroke();
-
     ctx.restore();
   }
 
+  drawRoundedRect(x, y, w, h, r) {
+    const radius = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + w - radius, y);
+    ctx.arcTo(x + w, y, x + w, y + radius, radius);
+    ctx.lineTo(x + w, y + h - radius);
+    ctx.arcTo(x + w, y + h, x + w - radius, y + h, radius);
+    ctx.lineTo(x + radius, y + h);
+    ctx.arcTo(x, y + h, x, y + h - radius, radius);
+    ctx.lineTo(x, y + radius);
+    ctx.arcTo(x, y, x + radius, y, radius);
+    ctx.closePath();
+  }
+
   drawBottomUI() {
-    const cavalryOn = this.nextPieceType === PIECE_CAVALRY;
-    const bomberOn = this.nextPieceType === PIECE_BOMBER;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
 
-    drawButton(
-      this.cavalryBtn.x,
-      this.cavalryBtn.y,
-      this.cavalryBtn.w,
-      this.cavalryBtn.h,
-      cavalryOn ? '#c0392b' : '#8e6e3b',
-      cavalryOn ? '骑兵：开' : '骑兵'
-    );
-
-    drawButton(
-      this.bomberBtn.x,
-      this.bomberBtn.y,
-      this.bomberBtn.w,
-      this.bomberBtn.h,
-      bomberOn ? '#8e44ad' : '#8e6e3b',
-      bomberOn ? '自爆兵：开' : '自爆兵'
-    );
+    for (const slot of this.cardSlotsLayout) {
+      const card = this.getCardDataBySlot(slot.index);
+      this.drawCardSlot(slot, card);
+    }
 
     ctx.fillStyle = '#1f1f1f';
     ctx.font = '16px Arial';
+    ctx.fillText('卡片槽最多 3 张，特殊兵种每张只能用一次', SCREEN_WIDTH / 2, SCREEN_HEIGHT - 24);
+  }
+
+  drawCardSlot(slot, card) {
+    const isEmpty = !card;
+    const isUsed = !!card && card.used;
+    const isActive = !!card && !isUsed && this.nextPieceType === card.type;
+
+    ctx.save();
+
+    if (isEmpty || isUsed) {
+      ctx.globalAlpha = isUsed ? 0.2 : 0.35;
+    }
+
+    ctx.fillStyle = isActive ? '#f7d794' : '#f3e5c8';
+    ctx.strokeStyle = isActive ? '#c0392b' : '#8e6e3b';
+    ctx.lineWidth = isActive ? 4 : 3;
+
+    this.drawRoundedRect(slot.x, slot.y, slot.w, slot.h, 12);
+    ctx.fill();
+    ctx.stroke();
+
+    if (isEmpty) {
+      ctx.fillStyle = '#8a7b63';
+      ctx.font = 'bold 18px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('空槽', slot.x + slot.w / 2, slot.y + slot.h / 2 - 8);
+      ctx.font = '12px Arial';
+      ctx.fillText(`槽位 ${slot.index + 1}`, slot.x + slot.w / 2, slot.y + slot.h / 2 + 20);
+      ctx.restore();
+      return;
+    }
+
+    const def = getPieceDef(this.pieceMap, card.type);
+
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(
-      '骑兵会推进；自爆兵若相邻敌军则降级，否则按朝向炸 2x3 并把格子彻底清空',
-      SCREEN_WIDTH / 2,
-      SCREEN_HEIGHT - 28
-    );
+
+    ctx.fillStyle = '#5b3a1f';
+    ctx.font = '12px Arial';
+    ctx.fillText(`卡槽 ${slot.index + 1}`, slot.x + slot.w / 2, slot.y + 14);
+
+    ctx.font = '32px Arial';
+    ctx.fillText(def.symbol || '●', slot.x + slot.w / 2, slot.y + 42);
+
+    ctx.font = 'bold 18px Arial';
+    ctx.fillText(def.name, slot.x + slot.w / 2, slot.y + 72);
+
+    ctx.font = '12px Arial';
+    ctx.fillStyle = '#6b4f2c';
+    ctx.fillText(def.needsDirection ? '落点后选方向' : '直接落子', slot.x + slot.w / 2, slot.y + 94);
+
+    if (isUsed) {
+      ctx.fillStyle = '#7f8c8d';
+      ctx.font = 'bold 16px Arial';
+      ctx.fillText('已使用', slot.x + slot.w / 2, slot.y + 112);
+    } else if (isActive) {
+      ctx.fillStyle = '#c0392b';
+      ctx.font = 'bold 16px Arial';
+      ctx.fillText('已选中', slot.x + slot.w / 2, slot.y + 112);
+    } else {
+      ctx.fillStyle = '#2d6a4f';
+      ctx.font = 'bold 16px Arial';
+      ctx.fillText('可使用', slot.x + slot.w / 2, slot.y + 112);
+    }
+
+    ctx.restore();
   }
 }
