@@ -62,6 +62,7 @@ function handleMoveForward(scene, row, col, piece, pieceDef) {
 
 function handleBlastArea(scene, row, col, piece, pieceDef) {
   const rule = pieceDef.behavior;
+  GameGlobal.musicManager.playExplosion(); // 播放爆炸音效
 
   if (rule.disableIfEnemyAdjacent && scene.hasEnemyAdjacent(row, col, piece.color)) {
     const downgrade = rule.degradeTo || 'normal';

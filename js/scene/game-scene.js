@@ -18,6 +18,7 @@ export default class GameScene {
     this.bg = new BackGround();
     this.player = new Player();
     this.gameInfo = new GameInfo();
+    this.bgm = "audio/bgm_fight.mp3";
 
     this.gameInfo.on('restart', () => {
       this.startLevel1();

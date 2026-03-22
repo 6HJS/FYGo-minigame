@@ -9,6 +9,7 @@ export default class HomeScene {
     this.sceneManager = sceneManager;
     this.tutorialScene = tutorialScene;
     this.goGameScene = goGameScene;
+    this.bgm = "audio/bgm_title.mp3";
   }
 
   onTouchStart(e) {

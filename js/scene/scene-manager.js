@@ -4,11 +4,22 @@ export default class SceneManager {
   }
 
   switchTo(scene) {
+    if (!scene) return;
+
     if (this.currentScene && this.currentScene.onLeave) {
       this.currentScene.onLeave();
     }
 
     this.currentScene = scene;
+
+    // 自动切换场景BGM
+    if (
+      this.currentScene &&
+      this.currentScene.bgm &&
+      GameGlobal.musicManager
+    ) {
+      GameGlobal.musicManager.playBgm(this.currentScene.bgm);
+    }
 
     if (this.currentScene && this.currentScene.onEnter) {
       this.currentScene.onEnter();

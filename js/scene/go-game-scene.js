@@ -40,6 +40,7 @@ export default class GoGameScene {
     this.specialPieces = pieceConfig.pieces.filter((p) => p.selectable);
 
     this.maxCardSlots = 3;
+    this.bgm = "audio/bgm_fight.mp3"
 
     this.initSafeLayout();
     this.resetGame();
@@ -331,6 +332,7 @@ export default class GoGameScene {
     this.previousBoardKey = result.beforeBoardKey;
     this.lastMove = { row, col };
     this.lastCaptured = result.captured || [];
+    GameGlobal.musicManager.playDropStone(); // 播放落子音效
 
     const pieceDef = getPieceDef(this.pieceMap, piece.type);
     if (pieceDef.selectable) {
