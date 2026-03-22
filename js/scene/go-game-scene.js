@@ -39,7 +39,7 @@ export default class GoGameScene {
     this.pieceMap = pieceMap;
 
     this.maxCardSlots = 3;
-    this.enabledCardTypes = ['cavalry', 'contract', 'bomber'];
+    this.enabledCardTypes = ['contract', 'bomber', 'gravity'];
     this.contractDuration = 3;
     this.bgm = "audio/bgm_fight.mp3"
 
@@ -385,6 +385,10 @@ export default class GoGameScene {
       this.consumeCard(piece.type);
     }
 
+    const gravityInfo = piece.type === 'gravity'
+      ? this.applyGravityEffect(row, col)
+      : { movedCount: 0, vanishedCount: 0 };
+
     this.advanceSpecialPieces({
       skipNewlyPlacedType: piece.type,
       skipNewlyPlacedKey: `${row},${col}`
@@ -398,6 +402,12 @@ export default class GoGameScene {
 
     if (contractInfo.chainKillCount > 0) {
       this.statusMessage = `契约触发，同归于尽 ${contractInfo.chainKillCount} 枚`;
+    } else if (piece.type === 'gravity') {
+      if (gravityInfo.movedCount > 0 || gravityInfo.vanishedCount > 0) {
+        this.statusMessage = `引力触发，拉动 ${gravityInfo.movedCount} 枚${gravityInfo.vanishedCount > 0 ? `，消失 ${gravityInfo.vanishedCount} 枚` : ''}`;
+      } else {
+        this.statusMessage = '引力触发，但没有棋子被拉动';
+      }
     } else if (result.captured.length > 0) {
       this.statusMessage = `提子 ${result.captured.length} 枚`;
     } else if (pieceDef.needsDirection) {
@@ -602,7 +612,90 @@ export default class GoGameScene {
       return false;
     }
 
-    return this.commitPlacement(row, col, finalPiece, result);
+    const ok = this.commitPlacement(row, col, finalPiece, result);
+    if (ok && finalPiece.type !== 'contract') {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    }
+    return ok;
+  }
+
+
+  applyGravityEffect(centerRow, centerCol) {
+    const dirs = [
+      { dr: -1, dc: 0 },
+      { dr: 1, dc: 0 },
+      { dr: 0, dc: -1 },
+      { dr: 0, dc: 1 }
+    ];
+
+    let movedCount = 0;
+
+    for (const { dr, dc } of dirs) {
+      let row = centerRow + dr;
+      let col = centerCol + dc;
+
+      while (this.isPlayablePoint(row, col)) {
+        const cell = this.board[row][col];
+        if (this.isPiece(cell)) {
+          const targetRow = row - dr;
+          const targetCol = col - dc;
+          if ((targetRow !== centerRow || targetCol !== centerCol) && this.board[targetRow][targetCol] === EMPTY) {
+            this.board[targetRow][targetCol] = cell;
+            this.board[row][col] = EMPTY;
+            movedCount += 1;
+          }
+          break;
+        }
+        row += dr;
+        col += dc;
+      }
+    }
+
+    const vanishedCount = this.resolveDeadGroupsAfterGravity();
+    this.previousBoardKey = this.getBoardKey(this.board);
+    return { movedCount, vanishedCount };
+  }
+
+  resolveDeadGroupsAfterGravity() {
+    let vanishedCount = 0;
+
+    while (true) {
+      const toRemove = [];
+      const visited = new Set();
+
+      for (let row = 0; row < BOARD_ROWS; row++) {
+        for (let col = 0; col < BOARD_COLS; col++) {
+          const cell = this.board[row][col];
+          if (!this.isPiece(cell)) continue;
+
+          const key = `${row},${col}`;
+          if (visited.has(key)) continue;
+
+          const group = this.getGroup(this.board, row, col);
+          for (const [gr, gc] of group) {
+            visited.add(`${gr},${gc}`);
+          }
+
+          const liberties = this.getLiberties(this.board, group);
+          if (liberties.size === 0) {
+            toRemove.push(...group);
+          }
+        }
+      }
+
+      if (toRemove.length === 0) break;
+
+      const unique = new Set();
+      for (const [row, col] of toRemove) {
+        const key = `${row},${col}`;
+        if (unique.has(key)) continue;
+        unique.add(key);
+        this.board[row][col] = EMPTY;
+        vanishedCount += 1;
+      }
+    }
+
+    return vanishedCount;
   }
 
   advanceSpecialPieces(options = {}) {

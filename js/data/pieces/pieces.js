@@ -57,6 +57,17 @@ module.exports = {
           R: [[-1,0],[0,0],[1,0],[-1,1],[0,1],[1,1]]
         }
       }
+    },
+    {
+      id: 'gravity',
+      name: '引力',
+      symbol: '⤢',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#4b2e83',
+      advanceOrder: 12,
+      behavior: { type: 'none' }
     }
   ]
 };
