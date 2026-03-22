@@ -1,5 +1,5 @@
-function createPiece(color, type = 'normal', dir = null) {
-  return { color, type, dir };
+function createPiece(color, type = 'normal', dir = null, id = null) {
+  return { id, color, type, dir };
 }
 
 function getPieceDef(pieceMap, type) {
@@ -39,7 +39,7 @@ function handleMoveForward(scene, row, col, piece, pieceDef) {
 
   if (!scene.isPlayablePoint(nr, nc)) {
     const fallbackType = pieceDef.behavior.transformOnBlocked || 'normal';
-    scene.board[row][col] = createPiece(piece.color, fallbackType, null);
+    scene.board[row][col] = createPiece(piece.color, fallbackType, null, piece.id);
     return {
       moved: false,
       transformed: true
@@ -50,7 +50,7 @@ function handleMoveForward(scene, row, col, piece, pieceDef) {
     scene.board[nr][nc] = null;
   }
 
-  scene.board[nr][nc] = createPiece(piece.color, piece.type, piece.dir);
+  scene.board[nr][nc] = createPiece(piece.color, piece.type, piece.dir, piece.id);
   scene.board[row][col] = null;
   scene.lastMove = { row: nr, col: nc };
 
@@ -66,7 +66,7 @@ function handleBlastArea(scene, row, col, piece, pieceDef) {
 
   if (rule.disableIfEnemyAdjacent && scene.hasEnemyAdjacent(row, col, piece.color)) {
     const downgrade = rule.degradeTo || 'normal';
-    scene.board[row][col] = createPiece(piece.color, downgrade, null);
+    scene.board[row][col] = createPiece(piece.color, downgrade, null, piece.id);
     return {
       exploded: [],
       triggeredCount: 0,

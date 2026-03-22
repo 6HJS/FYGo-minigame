@@ -26,6 +26,17 @@ module.exports = {
       }
     },
     {
+      id: 'contract',
+      name: '契约',
+      symbol: '✝',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#7e22ce',
+      advanceOrder: 15,
+      behavior: { type: 'none' }
+    },
+    {
       id: 'bomber',
       name: '自爆兵',
       symbol: '💥',

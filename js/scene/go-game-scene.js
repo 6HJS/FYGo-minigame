@@ -37,9 +37,10 @@ export default class GoGameScene {
     this.boardConfig = boardConfig;
     this.pieceConfig = pieceConfig;
     this.pieceMap = pieceMap;
-    this.specialPieces = pieceConfig.pieces.filter((p) => p.selectable);
 
     this.maxCardSlots = 3;
+    this.enabledCardTypes = ['cavalry', 'contract', 'bomber'];
+    this.contractDuration = 3;
     this.bgm = "audio/bgm_fight.mp3"
 
     this.initSafeLayout();
@@ -98,11 +99,22 @@ export default class GoGameScene {
     const loadout = [];
 
     for (let i = 0; i < this.maxCardSlots; i++) {
-      const piece = this.specialPieces[i];
-      loadout.push(piece ? { type: piece.id, used: false } : null);
+      const type = this.getEnabledCardTypes()[i];
+      const def = type ? getPieceDef(this.pieceMap, type) : null;
+
+      if (!type || !def || def.id !== type || type === (this.pieceConfig.defaultPieceType || 'normal')) {
+        loadout.push(null);
+        continue;
+      }
+
+      loadout.push({ type, used: false });
     }
 
     return loadout;
+  }
+
+  getEnabledCardTypes() {
+    return Array.isArray(this.enabledCardTypes) ? this.enabledCardTypes : [];
   }
 
   resetGame() {
@@ -124,6 +136,9 @@ export default class GoGameScene {
     this.directionButtons = null;
 
     this.cardLoadout = this.createInitialCardLoadout();
+    this.nextPieceId = 1;
+    this.contractLinks = [];
+    this.pendingContractPlacement = null;
 
     this.calcBoardLayout();
   }
@@ -204,6 +219,196 @@ export default class GoGameScene {
     return true;
   }
 
+  refundCard(type) {
+    for (let i = this.cardLoadout.length - 1; i >= 0; i--) {
+      const card = this.cardLoadout[i];
+      if (card && card.type === type && card.used) {
+        card.used = false;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  cancelPendingContractPlacement() {
+    const pending = this.pendingContractPlacement;
+    if (!pending) return false;
+
+    this.removePieceById(pending.contractId);
+    this.contractLinks = this.contractLinks.filter((link) =>
+      link.contractId !== pending.contractId && link.targetId !== pending.contractId
+    );
+    this.refundCard('contract');
+    this.clearPendingContractPlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.previousBoardKey = this.getBoardKey(this.board);
+    this.lastMove = null;
+    this.lastCaptured = [];
+    this.statusMessage = '已取消契约落子';
+    return true;
+  }
+
+  allocPieceId() {
+    const id = this.nextPieceId;
+    this.nextPieceId += 1;
+    return id;
+  }
+
+  findPiecePositionById(pieceId) {
+    if (!pieceId) return null;
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = this.board[row][col];
+        if (this.isPiece(cell) && cell.id === pieceId) return { row, col, cell };
+      }
+    }
+    return null;
+  }
+
+  removePieceById(pieceId) {
+    const found = this.findPiecePositionById(pieceId);
+    if (!found) return false;
+    this.board[found.row][found.col] = EMPTY;
+    return true;
+  }
+
+  clearPendingContractPlacement() {
+    this.pendingContractPlacement = null;
+  }
+
+  bindPendingContractToTarget(row, col) {
+    const pending = this.pendingContractPlacement;
+    if (!pending) return false;
+
+    const target = this.board[row][col];
+    if (!this.isPiece(target) || target.color !== this.getOpponent(pending.color)) {
+      this.statusMessage = '请选择一个对方棋子作为契约对象';
+      return false;
+    }
+
+    this.contractLinks = this.contractLinks.filter((link) =>
+      link.contractId !== pending.contractId &&
+      link.targetId !== pending.contractId &&
+      link.contractId !== target.id &&
+      link.targetId !== target.id
+    );
+
+    this.contractLinks.push({
+      contractId: pending.contractId,
+      targetId: target.id,
+      remaining: this.contractDuration
+    });
+
+    this.clearPendingContractPlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.currentPlayer = this.getOpponent(this.currentPlayer);
+    this.statusMessage = `契约已生效：${this.contractDuration}回合内同生共死`;
+    return true;
+  }
+
+  resolveContracts(stepCountdown = false) {
+    let changed = false;
+    let chainKillCount = 0;
+
+    let stable = false;
+    while (!stable) {
+      stable = true;
+      const survivors = [];
+
+      for (const link of this.contractLinks) {
+        const contractPos = this.findPiecePositionById(link.contractId);
+        const targetPos = this.findPiecePositionById(link.targetId);
+
+        if (!contractPos && !targetPos) {
+          changed = true;
+          stable = false;
+          continue;
+        }
+
+        if (!contractPos || !targetPos) {
+          const survivorId = contractPos ? link.contractId : link.targetId;
+          if (this.removePieceById(survivorId)) {
+            chainKillCount += 1;
+          }
+          changed = true;
+          stable = false;
+          continue;
+        }
+
+        survivors.push(link);
+      }
+
+      this.contractLinks = survivors;
+    }
+
+    if (stepCountdown && this.contractLinks.length > 0) {
+      const nextLinks = [];
+      for (const link of this.contractLinks) {
+        const contractPos = this.findPiecePositionById(link.contractId);
+        const targetPos = this.findPiecePositionById(link.targetId);
+        if (!contractPos || !targetPos) continue;
+
+        const remaining = link.remaining - 1;
+        if (remaining <= 0) {
+          const piece = this.board[contractPos.row][contractPos.col];
+          if (this.isPiece(piece)) {
+            this.board[contractPos.row][contractPos.col] = createPiece(piece.color, 'normal', null, piece.id);
+          }
+          changed = true;
+          continue;
+        }
+
+        nextLinks.push({ ...link, remaining });
+      }
+      this.contractLinks = nextLinks;
+    }
+
+    if (changed) {
+      this.previousBoardKey = this.getBoardKey(this.board);
+    }
+
+    return { changed, chainKillCount, expiredCount: 0 };
+  }
+
+  commitPlacement(row, col, piece, result, options = {}) {
+    const endTurn = options.endTurn !== false;
+    const advanceContracts = options.advanceContracts !== false;
+
+    this.board = result.board;
+    this.previousBoardKey = result.beforeBoardKey;
+    this.lastMove = { row, col };
+    this.lastCaptured = result.captured || [];
+    GameGlobal.musicManager.playDropStone();
+
+    const pieceDef = getPieceDef(this.pieceMap, piece.type);
+    if (pieceDef.selectable) {
+      this.consumeCard(piece.type);
+    }
+
+    this.advanceSpecialPieces({
+      skipNewlyPlacedType: piece.type,
+      skipNewlyPlacedKey: `${row},${col}`
+    });
+
+    const contractInfo = this.resolveContracts(advanceContracts);
+
+    if (endTurn) {
+      this.currentPlayer = this.getOpponent(this.currentPlayer);
+    }
+
+    if (contractInfo.chainKillCount > 0) {
+      this.statusMessage = `契约触发，同归于尽 ${contractInfo.chainKillCount} 枚`;
+    } else if (result.captured.length > 0) {
+      this.statusMessage = `提子 ${result.captured.length} 枚`;
+    } else if (pieceDef.needsDirection) {
+      this.statusMessage = `${pieceDef.name}已落子，方向 ${piece.dir}`;
+    } else {
+      this.statusMessage = '';
+    }
+
+    return true;
+  }
+
   clearPendingSelection() {
     this.pendingPlacement = null;
     this.directionButtons = null;
@@ -227,10 +432,25 @@ export default class GoGameScene {
     for (const slot of this.cardSlotsLayout) {
       if (!inRect(x, y, slot.x, slot.y, slot.w, slot.h)) continue;
 
+      if (this.pendingContractPlacement) {
+        this.cancelPendingContractPlacement();
+        return;
+      }
+
       const card = this.getCardDataBySlot(slot.index);
       if (!card || card.used) return;
 
       this.toggleNextSpecialPiece(card.type);
+      return;
+    }
+
+    if (this.pendingContractPlacement) {
+      const point = this.screenToBoard(x, y);
+      if (!point) {
+        this.statusMessage = '请选择一个对方棋子作为契约对象，或点下方卡牌取消';
+        return;
+      }
+      this.bindPendingContractToTarget(point.row, point.col);
       return;
     }
 
@@ -252,6 +472,11 @@ export default class GoGameScene {
     }
 
     const selectedDef = getPieceDef(this.pieceMap, this.nextPieceType);
+    if (this.nextPieceType === 'contract') {
+      this.startContractPlacement(point.row, point.col);
+      return;
+    }
+
     if (selectedDef.needsDirection) {
       this.startSpecialPlacement(point.row, point.col, this.nextPieceType);
       return;
@@ -280,6 +505,11 @@ export default class GoGameScene {
     this.nextPieceType = this.nextPieceType === type ? defaultType : type;
 
     const pieceDef = getPieceDef(this.pieceMap, this.nextPieceType);
+    if (type === 'contract' && this.nextPieceType === type) {
+      this.statusMessage = `已选中${pieceDef.name}卡：先落下契约子，再点敌子绑定`;
+      return;
+    }
+
     this.statusMessage = pieceDef.needsDirection
       ? `已选中${pieceDef.name}卡：先点落点，再选方向`
       : `已切回${pieceDef.name}`;
@@ -311,6 +541,45 @@ export default class GoGameScene {
     this.statusMessage = `请选择${pieceDef.name}方向`;
   }
 
+
+  startContractPlacement(row, col) {
+    if (!this.isPlayablePoint(row, col)) return;
+
+    if (!this.hasAvailableCard('contract')) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = '这张卡已经用掉了';
+      return;
+    }
+
+    if (this.board[row][col] !== EMPTY) {
+      this.statusMessage = '此处已有棋子';
+      return;
+    }
+
+    const piece = {
+      color: this.currentPlayer,
+      type: 'contract',
+      dir: null,
+      id: this.allocPieceId()
+    };
+
+    const result = this.simulatePlacePiece(this.board, row, col, piece, this.currentPlayer);
+    if (!result.ok) {
+      this.statusMessage = result.message || '落子失败';
+      return;
+    }
+
+    this.commitPlacement(row, col, piece, result, { endTurn: false, advanceContracts: true });
+    this.pendingContractPlacement = {
+      row,
+      col,
+      color: this.currentPlayer,
+      contractId: piece.id
+    };
+    this.nextPieceType = 'contract';
+    this.statusMessage = '请选择一个对方棋子绑定契约，或点下方卡牌取消';
+  }
+
   confirmSpecialPlacement(dir) {
     if (!this.pendingPlacement) return;
 
@@ -325,40 +594,15 @@ export default class GoGameScene {
   }
 
   tryPlacePiece(row, col, piece) {
-    const result = this.simulatePlacePiece(this.board, row, col, piece, this.currentPlayer);
+    const finalPiece = { ...piece, id: piece.id || this.allocPieceId() };
+    const result = this.simulatePlacePiece(this.board, row, col, finalPiece, this.currentPlayer);
 
     if (!result.ok) {
       this.statusMessage = result.message || '落子失败';
       return false;
     }
 
-    this.board = result.board;
-    this.previousBoardKey = result.beforeBoardKey;
-    this.lastMove = { row, col };
-    this.lastCaptured = result.captured || [];
-    GameGlobal.musicManager.playDropStone(); // 播放落子音效
-
-    const pieceDef = getPieceDef(this.pieceMap, piece.type);
-    if (pieceDef.selectable) {
-      this.consumeCard(piece.type);
-    }
-
-    this.advanceSpecialPieces({
-      skipNewlyPlacedType: piece.type,
-      skipNewlyPlacedKey: `${row},${col}`
-    });
-
-    this.currentPlayer = this.getOpponent(this.currentPlayer);
-
-    if (result.captured.length > 0) {
-      this.statusMessage = `提子 ${result.captured.length} 枚`;
-    } else if (pieceDef.needsDirection) {
-      this.statusMessage = `${pieceDef.name}已落子，方向 ${piece.dir}`;
-    } else {
-      this.statusMessage = '';
-    }
-
-    return true;
+    return this.commitPlacement(row, col, finalPiece, result);
   }
 
   advanceSpecialPieces(options = {}) {
@@ -423,7 +667,7 @@ export default class GoGameScene {
     const beforeBoardKey = this.getBoardKey(sourceBoard);
 
     const nextBoard = this.cloneBoard(sourceBoard);
-    nextBoard[row][col] = createPiece(piece.color, piece.type, piece.dir);
+    nextBoard[row][col] = createPiece(piece.color, piece.type, piece.dir, piece.id || this.allocPieceId());
 
     let totalCaptured = [];
     const neighbors = this.getNeighborsForBoard(nextBoard, row, col);
@@ -640,6 +884,7 @@ export default class GoGameScene {
     this.drawTopBar();
     this.drawBoard();
     this.drawPieces();
+    this.drawContracts();
     this.drawPendingPlacement();
     this.drawBottomUI();
   }
@@ -836,6 +1081,63 @@ export default class GoGameScene {
     ctx.closePath();
     ctx.fillStyle = color === BLACK ? '#ffda44' : '#d35400';
     ctx.fill();
+  }
+
+
+  drawContracts() {
+    if (!this.contractLinks || this.contractLinks.length === 0) return;
+
+    const t = Date.now() / 260;
+    const pulse = 1 + Math.sin(t) * 0.16;
+
+    for (const link of this.contractLinks) {
+      const a = this.findPiecePositionById(link.contractId);
+      const b = this.findPiecePositionById(link.targetId);
+      if (!a || !b) continue;
+
+      const pa = this.boardToScreen(a.row, a.col);
+      const pb = this.boardToScreen(b.row, b.col);
+
+      ctx.save();
+      ctx.strokeStyle = 'rgba(155, 89, 182, 0.45)';
+      ctx.lineWidth = Math.max(2, this.cellSize * 0.08);
+      ctx.setLineDash([6, 5]);
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+
+      this.drawContractMark(pa.x, pa.y, link.remaining, pulse);
+      this.drawContractMark(pb.x, pb.y, link.remaining, pulse);
+    }
+  }
+
+  drawContractMark(x, y, remaining, pulse) {
+    const size = Math.max(9, this.cellSize * 0.22) * pulse;
+
+    ctx.save();
+    ctx.translate(x, y - this.cellSize * 0.56);
+    ctx.strokeStyle = '#a855f7';
+    ctx.lineWidth = Math.max(2, this.cellSize * 0.08);
+    ctx.shadowColor = 'rgba(168, 85, 247, 0.55)';
+    ctx.shadowBlur = 10;
+
+    ctx.beginPath();
+    ctx.moveTo(0, -size);
+    ctx.lineTo(0, size);
+    ctx.moveTo(-size * 0.75, 0);
+    ctx.lineTo(size * 0.75, 0);
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#7e22ce';
+    ctx.font = `bold ${Math.max(11, this.cellSize * 0.24)}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(String(remaining), 0, -size - 3);
+    ctx.restore();
   }
 
   drawPendingPlacement() {
