@@ -35,7 +35,7 @@ export default class CardSelectScene {
     this.backBtn = { x: 24, y: capsuleBottom + 12, w: 100, h: 40 };
     this.titleY = this.backBtn.y + 60;
 
-    this.slotAreaY = this.titleY + 36;
+    this.slotAreaY = this.titleY + 80;
     this.slotW = 96;
     this.slotH = 118;
     this.slotGap = 14;
@@ -48,7 +48,7 @@ export default class CardSelectScene {
       h: this.slotH
     }));
 
-    this.poolTop = this.slotAreaY + this.slotH + 36;
+    this.poolTop = this.slotAreaY + this.slotH + 40;
     this.cardW = SCREEN_WIDTH - 64;
     this.cardH = 70;
     this.cardGap = 14;
@@ -219,7 +219,7 @@ export default class CardSelectScene {
 
     ctx.fillStyle = '#f5e6a9';
     ctx.font = 'bold 22px Arial';
-    ctx.fillText('卡牌池', SCREEN_WIDTH / 2, this.poolTop - 22);
+    ctx.fillText('卡牌池', SCREEN_WIDTH / 2, this.poolTop - 20);
 
     for (let i = 0; i < this.pool.length; i++) {
       this.drawPoolCard(this.poolRects[i], this.pool[i]);
