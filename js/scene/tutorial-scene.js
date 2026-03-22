@@ -1,4 +1,5 @@
 import { drawButton, inRect } from '../utils/ui';
+const tutorialLevels = require('../data/tutorial-levels');
 
 const ctx = canvas.getContext('2d');
 const SCREEN_WIDTH = canvas.width;
@@ -17,13 +18,11 @@ export default class TutorialScene {
 
     this.scrollY = 0;
     this.lastTouchY = null;
-
-    this.levels = Array.from({ length: 20 }, (_, i) => ({
-      id: i + 1,
-      name: `教学关卡${i + 1}`,
+    this.levels = tutorialLevels.map((level, i) => ({
+      ...level,
       unlocked: i === 0,
-      completed: false,       // 是否完成教学
-      rewardClaimed: false    // 是否已领取宝箱
+      completed: false,
+      rewardClaimed: false
     }));
   }
 
@@ -75,14 +74,19 @@ export default class TutorialScene {
       return;
     }
 
-    if (index === 0) {
-      this.goGameScene.startLevel1();
-      this.sceneManager.switchTo(this.goGameScene);
-    } else {
-      wx.showToast({
-        title: `第${index + 1}关暂未开放`,
-        icon: 'none'
-      });
+    this.goGameScene.startTutorial(level, this, index);
+    this.sceneManager.switchTo(this.goGameScene);
+  }
+
+  markLevelCompleted(levelId) {
+    const index = this.levels.findIndex((item) => item.id === levelId);
+    if (index < 0) return;
+
+    const level = this.levels[index];
+    level.completed = true;
+
+    if (this.levels[index + 1]) {
+      this.levels[index + 1].unlocked = true;
     }
   }
 
@@ -191,8 +195,8 @@ export default class TutorialScene {
       // 左半颜色和文字
       const leftBg = level.unlocked ? '#ffffff' : '#d9d9d9';
       const leftText = level.unlocked
-        ? `第${level.id}关`
-        : `第${level.id}关（未解锁）`;
+        ? level.name
+        : `${level.name}（未解锁）`;
       const leftTextColor = level.unlocked ? '#333333' : '#888888';
 
       // 右半颜色和文字

@@ -43,6 +43,13 @@ export default class GoGameScene {
     this.contractDuration = 3;
     this.bgm = "audio/bgm_fight.mp3"
 
+    this.isTutorialMode = false;
+    this.tutorialLevel = null;
+    this.tutorialScene = null;
+    this.tutorialIndex = -1;
+    this.tutorialPlayerColor = BLACK;
+    this.returnScene = null;
+
     this.initSafeLayout();
     this.resetGame();
   }
@@ -117,6 +124,212 @@ export default class GoGameScene {
     return Array.isArray(this.enabledCardTypes) ? this.enabledCardTypes : [];
   }
 
+
+  makeTutorialCardLoadout(cardTypes = []) {
+    const list = [];
+    for (let i = 0; i < this.maxCardSlots; i++) {
+      const type = cardTypes[i];
+      list.push(type ? { type, used: false } : null);
+    }
+    return list;
+  }
+
+  startTutorial(level, tutorialScene, tutorialIndex = 0) {
+    this.isTutorialMode = true;
+    this.tutorialLevel = level;
+    this.tutorialScene = tutorialScene || null;
+    this.tutorialIndex = tutorialIndex;
+    this.tutorialPlayerColor = level.playerColor || BLACK;
+    this.returnScene = tutorialScene || this.homeScene || null;
+
+    if (level.boardConfig) {
+      this.boardConfig = level.boardConfig;
+      BOARD_SHAPE = this.boardConfig.shape;
+      BOARD_ROWS = BOARD_SHAPE.length;
+      BOARD_COLS = BOARD_SHAPE[0].length;
+    }
+
+    this.resetGame();
+    this.applyTutorialSetup(level);
+  }
+
+  applyTutorialSetup(level) {
+    this.currentPlayer = this.tutorialPlayerColor;
+    this.cardLoadout = this.makeTutorialCardLoadout(level.cards || [level.pieceType]);
+    this.enabledCardTypes = (level.cards || [level.pieceType]).slice();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.clearPendingSelection();
+    this.clearPendingContractPlacement();
+    this.clearPendingRebirthPlacement();
+    this.clearPendingPersuaderPlacement();
+    this.contractLinks = [];
+    this.fogState = null;
+
+    const presetPieces = Array.isArray(level.presetPieces) ? level.presetPieces : [];
+    for (const item of presetPieces) {
+      if (!this.isBoardShapeCell(item.row, item.col)) continue;
+      this.board[item.row][item.col] = createPiece(
+        item.color,
+        item.type || 'normal',
+        item.dir || null,
+        this.allocPieceId(),
+        item.extra || null
+      );
+    }
+
+    this.previousBoardKey = this.getBoardKey(this.board);
+    this.statusMessage = level.tips || level.name || '';
+    this.lastMove = null;
+    this.lastCaptured = [];
+  }
+
+  reloadTutorialLevel() {
+    if (!this.isTutorialMode || !this.tutorialLevel) {
+      this.resetGame();
+      return;
+    }
+    this.startTutorial(this.tutorialLevel, this.tutorialScene, this.tutorialIndex);
+  }
+
+  isTutorialCardUnused() {
+    if (!this.isTutorialMode || !this.tutorialLevel) return false;
+    const cards = this.tutorialLevel.cards || [this.tutorialLevel.pieceType];
+    return cards.some((type) => this.findAvailableCardSlotByType(type) >= 0);
+  }
+
+  getBoardCell(row, col) {
+    if (!this.isBoardShapeCell(row, col)) return INVALID;
+    return this.board[row][col];
+  }
+
+  getPieceCountByColor(color) {
+    let count = 0;
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = this.board[row][col];
+        if (this.isPiece(cell) && (color == null || cell.color === color)) count += 1;
+      }
+    }
+    return count;
+  }
+
+  matchesTutorialCondition(condition) {
+    switch (condition.type) {
+      case 'card_used':
+        return !this.hasAvailableCard(condition.pieceType);
+
+      case 'cell_empty':
+        return this.getBoardCell(condition.row, condition.col) === EMPTY;
+
+      case 'cell_destroyed':
+        return this.getBoardCell(condition.row, condition.col) === DESTROYED;
+
+      case 'cell_exists': {
+        const cell = this.getBoardCell(condition.row, condition.col);
+        if (!this.isPiece(cell)) return false;
+        if (condition.color != null && cell.color !== condition.color) return false;
+        if (condition.pieceType && cell.type !== condition.pieceType) return false;
+        if (condition.dir && cell.dir !== condition.dir) return false;
+        return true;
+      }
+
+      case 'cell_color': {
+        const cell = this.getBoardCell(condition.row, condition.col);
+        if (!this.isPiece(cell) || cell.color !== condition.color) return false;
+        if (condition.pieceType && cell.type !== condition.pieceType) return false;
+        if (condition.dir && cell.dir !== condition.dir) return false;
+        return true;
+      }
+
+      case 'cell_type': {
+        const cell = this.getBoardCell(condition.row, condition.col);
+        if (!this.isPiece(cell) || cell.type !== condition.pieceType) return false;
+        if (condition.color != null && cell.color !== condition.color) return false;
+        return true;
+      }
+
+      case 'piece_count': {
+        const count = this.getPieceCountByColor(condition.color);
+        if (condition.equals != null) return count === condition.equals;
+        if (condition.min != null && count < condition.min) return false;
+        if (condition.max != null && count > condition.max) return false;
+        return true;
+      }
+
+      case 'fog_center':
+        return !!(this.fogState && this.fogState.row === condition.row && this.fogState.col === condition.col && this.fogState.active);
+
+      case 'rebirth_target': {
+        const cell = this.getBoardCell(condition.sourceRow, condition.sourceCol);
+        return !!(this.isPiece(cell) && cell.rebirthReady && cell.rebirthTarget && cell.rebirthTarget.row === condition.targetRow && cell.rebirthTarget.col === condition.targetCol);
+      }
+
+      case 'contract_linked': {
+        const a = this.getBoardCell(condition.a[0], condition.a[1]);
+        const b = this.getBoardCell(condition.b[0], condition.b[1]);
+        if (!this.isPiece(a) || !this.isPiece(b)) return false;
+        return this.contractLinks.some((link) =>
+          (link.contractId === a.id && link.targetId === b.id) ||
+          (link.contractId === b.id && link.targetId === a.id)
+        );
+      }
+
+      default:
+        return false;
+    }
+  }
+
+  checkTutorialGoal() {
+    if (!this.isTutorialMode || !this.tutorialLevel || !this.tutorialLevel.goal) return false;
+    const list = Array.isArray(this.tutorialLevel.goal.allOf) ? this.tutorialLevel.goal.allOf : [];
+    return list.every((condition) => this.matchesTutorialCondition(condition));
+  }
+
+  handleTutorialPostAction(triggerType, piece = null) {
+    if (!this.isTutorialMode || !this.tutorialLevel) return;
+
+    if (piece && piece.type === 'cavalry' && this.tutorialLevel.autoAdvancePlacedPiece) {
+      this.advanceSpecialPieces();
+    }
+
+    if (piece && piece.type === 'archer' && this.tutorialLevel.autoResolveArcherShot) {
+      this.resolveTurnStartSpecials(this.tutorialPlayerColor);
+      if (this.lastMove) {
+        const cell = this.getBoardCell(this.lastMove.row, this.lastMove.col);
+        if (this.isPiece(cell) && cell.type === 'archer') {
+          this.normalizePieceAt(this.lastMove.row, this.lastMove.col);
+        }
+      }
+    }
+
+    this.currentPlayer = this.tutorialPlayerColor;
+    this.previousBoardKey = this.getBoardKey(this.board);
+
+    if (this.checkTutorialGoal()) {
+      this.completeTutorialLevel();
+    }
+  }
+
+  completeTutorialLevel() {
+    if (!this.isTutorialMode || !this.tutorialLevel) return;
+
+    if (this.tutorialScene && this.tutorialScene.markLevelCompleted) {
+      this.tutorialScene.markLevelCompleted(this.tutorialLevel.id);
+    }
+
+    wx.showToast({
+      title: `${this.tutorialLevel.name}通关`,
+      icon: 'success'
+    });
+
+    const targetScene = this.returnScene || this.homeScene;
+    if (targetScene) {
+      setTimeout(() => {
+        this.sceneManager.switchTo(targetScene);
+      }, 600);
+    }
+  }
+
   setBoardConfig(boardConfig) {
     if (!boardConfig || !Array.isArray(boardConfig.shape) || !boardConfig.shape.length) return;
 
@@ -143,6 +356,11 @@ export default class GoGameScene {
   }
 
   prepareMatch(options = {}) {
+    this.isTutorialMode = false;
+    this.tutorialLevel = null;
+    this.tutorialScene = null;
+    this.tutorialIndex = -1;
+    this.returnScene = this.homeScene || null;
     if (options.boardConfig) {
       this.boardConfig = options.boardConfig;
       BOARD_SHAPE = this.boardConfig.shape;
@@ -389,6 +607,15 @@ export default class GoGameScene {
     return false;
   }
 
+  hasAdjacentAlly(row, col, player) {
+    const neighbors = this.getNeighborsForBoard(this.board, row, col);
+    for (const [nr, nc] of neighbors) {
+      const cell = this.board[nr][nc];
+      if (this.isPiece(cell) && cell.color === player) return true;
+    }
+    return false;
+  }
+
   bindPendingPersuaderToTarget(row, col) {
     const pending = this.pendingPersuaderPlacement;
     if (!pending) return false;
@@ -424,6 +651,7 @@ export default class GoGameScene {
     this.statusMessage = vanishedCount > 0
       ? `说客生效，转化 1 枚，消失 ${vanishedCount} 枚`
       : '说客生效，转化 1 枚';
+    this.handleTutorialPostAction('persuader', { type: 'persuader' });
     return true;
   }
 
@@ -490,6 +718,7 @@ export default class GoGameScene {
     this.statusMessage = turnStartInfo.persuadedCount > 0
       ? `重生点已绑定，同时说客转化 ${turnStartInfo.persuadedCount} 枚`
       : `重生点已绑定：(${row + 1}, ${col + 1})`;
+    this.handleTutorialPostAction('rebirth', { type: 'rebirth' });
     return true;
   }
 
@@ -529,6 +758,7 @@ export default class GoGameScene {
     this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
     this.previousBoardKey = this.getBoardKey(this.board);
     this.clearFog();
+    this.handleTutorialPostAction('fog-occupied');
     return true;
   }
 
@@ -569,6 +799,7 @@ export default class GoGameScene {
     this.statusMessage = turnStartInfo.persuadedCount > 0
       ? `契约已生效，同时说客转化 ${turnStartInfo.persuadedCount} 枚`
       : `契约已生效：${this.contractDuration}回合内同生共死`;
+    this.handleTutorialPostAction('contract', { type: 'contract' });
     return true;
   }
 
@@ -662,6 +893,9 @@ export default class GoGameScene {
     const reverseInfo = piece.type === 'reverse'
       ? this.applyReverseEffect(row, col)
       : { flippedCount: 0, vanishedCount: 0 };
+    const symphonyInfo = piece.type === 'symphony'
+      ? this.applySymphonyEffect(row, col)
+      : { horizontalTriggered: false, verticalTriggered: false, killedCount: 0, vanishedCount: 0 };
 
     if (piece.type === 'gravity' || piece.type === 'repulsion' || piece.type === 'reverse') {
       this.normalizePieceAt(row, col);
@@ -687,8 +921,16 @@ export default class GoGameScene {
 
     if (piece.type === 'rebirth' && !endTurn) {
       this.statusMessage = '请选择一个空位作为重生点';
+    } else if (piece.type === 'archer') {
+      this.statusMessage = '弓箭手已架弓，下一次轮到你时将朝指定方向射箭';
     } else if (contractInfo.chainKillCount > 0) {
       this.statusMessage = `契约触发，同归于尽 ${contractInfo.chainKillCount} 枚`;
+    } else if (turnStartInfo.archerDisabledCount > 0) {
+      this.statusMessage = `有 ${turnStartInfo.archerDisabledCount} 枚弓箭手被敌子贴身，失去射箭能力`;
+    } else if (turnStartInfo.archerShotCount > 0) {
+      this.statusMessage = turnStartInfo.archerKillCount > 0
+        ? `弓箭手放箭，击杀 ${turnStartInfo.archerKillCount} 枚`
+        : '弓箭手放箭，但前方没有目标';
     } else if (turnStartInfo.persuadedCount > 0 || turnStartInfo.vanishedCount > 0) {
       this.statusMessage = `说客发动，转化 ${turnStartInfo.persuadedCount} 枚${turnStartInfo.vanishedCount > 0 ? `，消失 ${turnStartInfo.vanishedCount} 枚` : ''}`;
     } else if (piece.type === 'gravity') {
@@ -709,6 +951,15 @@ export default class GoGameScene {
       } else {
         this.statusMessage = '逆转触发，但周围没有可翻转的棋子';
       }
+    } else if (piece.type === 'symphony') {
+      const triggeredAxes = [];
+      if (symphonyInfo.horizontalTriggered) triggeredAxes.push('横线');
+      if (symphonyInfo.verticalTriggered) triggeredAxes.push('竖线');
+      if (triggeredAxes.length > 0) {
+        this.statusMessage = `交响触发：${triggeredAxes.join('＋')}同数清场，击杀 ${symphonyInfo.killedCount} 枚${symphonyInfo.vanishedCount > 0 ? `，消失 ${symphonyInfo.vanishedCount} 枚` : ''}`;
+      } else {
+        this.statusMessage = '交响未触发：横线与竖线黑白数量都不相等';
+      }
     } else if (piece.type === 'persuader' && !endTurn) {
       this.statusMessage = '请选择说客上下左右相邻的一枚敌子';
     } else if (piece.type === 'fog') {
@@ -721,6 +972,7 @@ export default class GoGameScene {
       this.statusMessage = '';
     }
 
+    this.handleTutorialPostAction('commit', piece);
     return true;
   }
 
@@ -744,43 +996,102 @@ export default class GoGameScene {
   }
 
   armPlacedPiece(row, col, piece) {
+    if (piece.type === 'archer') {
+      const cell = this.board[row][col];
+      if (!this.isPiece(cell)) return;
+      this.board[row][col] = createPiece(cell.color, cell.type, cell.dir, cell.id, {
+        archerCooldown: 1,
+        archerReady: true
+      });
+      return;
+    }
+
     if (piece.type !== 'persuader') return;
   }
 
+  resolveArcherShot(row, col, cell) {
+    const dirMove = this.DIRS[cell.dir];
+    if (!dirMove) {
+      this.normalizePieceAt(row, col);
+      return { shot: false, killed: false, disabled: false, blockedByEnemy: false };
+    }
+
+    if (this.hasAdjacentEnemy(row, col, cell.color)) {
+      this.normalizePieceAt(row, col);
+      return { shot: false, killed: false, disabled: true, blockedByEnemy: true };
+    }
+
+    if ((cell.archerCooldown || 0) > 0) {
+      const nextCooldown = Math.max(0, cell.archerCooldown - 1);
+      if (nextCooldown > 0) {
+        this.board[row][col] = createPiece(cell.color, cell.type, cell.dir, cell.id, {
+          archerCooldown: nextCooldown,
+          archerReady: true
+        });
+        return { shot: false, killed: false, disabled: false, blockedByEnemy: false };
+      }
+    }
+
+    let target = null;
+    let nr = row + dirMove.dr;
+    let nc = col + dirMove.dc;
+    while (this.isPlayablePoint(nr, nc)) {
+      if (this.isPiece(this.board[nr][nc])) {
+        target = { row: nr, col: nc };
+        break;
+      }
+      nr += dirMove.dr;
+      nc += dirMove.dc;
+    }
+
+    let killed = false;
+    if (target) {
+      const out = this.resolvePieceRemovalAt(target.row, target.col, {
+        reason: 'special',
+        allowRebirth: true
+      });
+      killed = !!out.removed;
+    }
+
+    this.normalizePieceAt(row, col);
+    return { shot: true, killed, disabled: false, blockedByEnemy: false };
+  }
+
   resolveTurnStartSpecials(player) {
-    const activations = [];
+    let persuadedCount = 0;
+    let archerShotCount = 0;
+    let archerKillCount = 0;
+    let archerDisabledCount = 0;
 
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
-        const cell = this.board[row][col];
-        if (!this.isPiece(cell)) continue;
-        if (false && cell.type === 'persuader' && cell.armed && cell.color === player) {
-          activations.push({ row, col, cell: { ...cell } });
+        const live = this.board[row][col];
+        if (!this.isPiece(live) || live.color !== player) continue;
+
+        if (live.type === 'archer' && live.archerReady) {
+          const out = this.resolveArcherShot(row, col, live);
+          if (out.shot) archerShotCount += 1;
+          if (out.killed) archerKillCount += 1;
+          if (out.disabled) archerDisabledCount += 1;
+          continue;
+        }
+
+        if (false && live.type === 'persuader' && live.armed) {
+          const neighbors = this.getNeighborsForBoard(this.board, row, col);
+          for (const [nr, nc] of neighbors) {
+            const target = this.board[nr][nc];
+            if (!this.isPiece(target) || target.color === player) continue;
+            this.board[nr][nc] = createPiece(player, target.type, target.dir, target.id, { ...target, color: undefined, type: undefined, dir: undefined, id: undefined });
+            persuadedCount += 1;
+          }
+          this.normalizePieceAt(row, col, { armed: false });
         }
       }
     }
 
-    if (activations.length === 0) return { persuadedCount: 0, vanishedCount: 0 };
-
-    let persuadedCount = 0;
-    for (const item of activations) {
-      const live = this.board[item.row][item.col];
-      if (!this.isPiece(live) || live.type !== 'persuader' || !live.armed || live.color !== player) continue;
-
-      const neighbors = this.getNeighborsForBoard(this.board, item.row, item.col);
-      for (const [nr, nc] of neighbors) {
-        const target = this.board[nr][nc];
-        if (!this.isPiece(target) || target.color === player) continue;
-        this.board[nr][nc] = createPiece(player, target.type, target.dir, target.id, { ...target, color: undefined, type: undefined, dir: undefined, id: undefined });
-        persuadedCount += 1;
-      }
-
-      this.normalizePieceAt(item.row, item.col, { armed: false });
-    }
-
     const vanishedCount = this.resolveDeadGroupsAfterGravity();
     this.previousBoardKey = this.getBoardKey(this.board);
-    return { persuadedCount, vanishedCount };
+    return { persuadedCount, vanishedCount, archerShotCount, archerKillCount, archerDisabledCount };
   }
 
   onTouchStart(e) {
@@ -789,12 +1100,14 @@ export default class GoGameScene {
     const y = touch.clientY;
 
     if (inRect(x, y, this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h)) {
-      if (this.homeScene) this.sceneManager.switchTo(this.homeScene);
+      const targetScene = this.returnScene || this.homeScene;
+      if (targetScene) this.sceneManager.switchTo(targetScene);
       return;
     }
 
     if (inRect(x, y, this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h)) {
-      this.resetGame();
+      if (this.isTutorialMode) this.reloadTutorialLevel();
+      else this.resetGame();
       return;
     }
 
@@ -951,6 +1264,11 @@ export default class GoGameScene {
 
     if (this.board[row][col] !== EMPTY) {
       this.statusMessage = '此处已有棋子';
+      return;
+    }
+
+    if (type === 'archer' && this.hasAdjacentAlly(row, col, this.currentPlayer)) {
+      this.statusMessage = '弓箭手不能与自己棋子相连';
       return;
     }
 
@@ -1111,6 +1429,16 @@ export default class GoGameScene {
   }
 
   tryPlacePiece(row, col, piece) {
+    if (this.isTutorialMode && piece.type === (this.pieceConfig.defaultPieceType || 'normal') && this.isTutorialCardUnused()) {
+      this.statusMessage = '本关要先使用下方指定的特殊兵种卡';
+      return false;
+    }
+
+    if (piece.type === 'archer' && this.hasAdjacentAlly(row, col, this.currentPlayer)) {
+      this.statusMessage = '弓箭手不能与自己棋子相连';
+      return false;
+    }
+
     const finalPiece = { ...piece, id: piece.id || this.allocPieceId() };
     const result = this.simulatePlacePiece(this.board, row, col, finalPiece, this.currentPlayer);
 
@@ -1129,6 +1457,91 @@ export default class GoGameScene {
     }
     return ok;
   }
+
+  collectLineTargets(row, col, dr, dc) {
+    const targets = [];
+
+    let nr = row + dr;
+    let nc = col + dc;
+    while (this.isPlayablePoint(nr, nc)) {
+      if (this.isPiece(this.board[nr][nc])) {
+        targets.push([nr, nc]);
+      }
+      nr += dr;
+      nc += dc;
+    }
+
+    nr = row - dr;
+    nc = col - dc;
+    while (this.isPlayablePoint(nr, nc)) {
+      if (this.isPiece(this.board[nr][nc])) {
+        targets.push([nr, nc]);
+      }
+      nr -= dr;
+      nc -= dc;
+    }
+
+    return targets;
+  }
+
+  getLineBalanceInfo(row, col, dr, dc) {
+    const targets = this.collectLineTargets(row, col, dr, dc);
+    let black = 0;
+    let white = 0;
+
+    for (const [r, c] of targets) {
+      const cell = this.board[r][c];
+      if (!this.isPiece(cell)) continue;
+      if (cell.color === BLACK) black += 1;
+      else if (cell.color === WHITE) white += 1;
+    }
+
+    return {
+      targets,
+      black,
+      white,
+      triggered: black > 0 && black === white
+    };
+  }
+
+  applySymphonyEffect(centerRow, centerCol) {
+    const horizontal = this.getLineBalanceInfo(centerRow, centerCol, 0, 1);
+    const vertical = this.getLineBalanceInfo(centerRow, centerCol, 1, 0);
+    const killMap = new Map();
+
+    if (horizontal.triggered) {
+      for (const [r, c] of horizontal.targets) {
+        killMap.set(`${r},${c}`, [r, c]);
+      }
+    }
+
+    if (vertical.triggered) {
+      for (const [r, c] of vertical.targets) {
+        killMap.set(`${r},${c}`, [r, c]);
+      }
+    }
+
+    let killedCount = 0;
+    for (const [r, c] of killMap.values()) {
+      const out = this.resolvePieceRemovalAt(r, c, {
+        reason: 'special',
+        allowRebirth: true
+      });
+      if (out.removed) killedCount += 1;
+    }
+
+    this.normalizePieceAt(centerRow, centerCol);
+    const vanishedCount = this.resolveDeadGroupsAfterGravity();
+    this.previousBoardKey = this.getBoardKey(this.board);
+
+    return {
+      horizontalTriggered: horizontal.triggered,
+      verticalTriggered: vertical.triggered,
+      killedCount,
+      vanishedCount
+    };
+  }
+
 
   applyRepulsionEffect(centerRow, centerCol) {
     const dirs = [
@@ -1460,7 +1873,7 @@ export default class GoGameScene {
           if (cell === INVALID) return 'X';
           if (cell === DESTROYED) return '#';
           if (cell === EMPTY) return '.';
-          return `${cell.color}${cell.type}${cell.dir || '_'}${cell.armed ? 'A' : ''}${cell.rebirthReady && cell.rebirthTarget ? `@${cell.rebirthTarget.row}_${cell.rebirthTarget.col}` : ''}`;
+          return `${cell.color}${cell.type}${cell.dir || '_'}${cell.armed ? 'A' : ''}${cell.archerReady ? 'H' : ''}${cell.archerCooldown != null ? `C${cell.archerCooldown}` : ''}${cell.rebirthReady && cell.rebirthTarget ? `@${cell.rebirthTarget.row}_${cell.rebirthTarget.col}` : ''}`;
         }).join(',')
       )
       .join('|');
@@ -1982,7 +2395,10 @@ export default class GoGameScene {
 
     ctx.fillStyle = '#1f1f1f';
     ctx.font = '16px Arial';
-    ctx.fillText('卡片槽最多 3 张，特殊兵种每张只能用一次', SCREEN_WIDTH / 2, SCREEN_HEIGHT - 24);
+    const bottomText = this.isTutorialMode && this.tutorialLevel
+      ? (this.tutorialLevel.tips || '请按提示完成教学目标')
+      : '卡片槽最多 3 张，特殊兵种每张只能用一次';
+    ctx.fillText(bottomText, SCREEN_WIDTH / 2, SCREEN_HEIGHT - 24);
   }
 
   drawCardSlot(slot, card) {

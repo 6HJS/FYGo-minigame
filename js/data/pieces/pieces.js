@@ -132,6 +132,30 @@ module.exports = {
       advanceOrder: 12,
       behavior: { type: 'none' }
     },
+
+    {
+      id: 'archer',
+      name: '弓箭手',
+      symbol: '🏹',
+      needsDirection: true,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#b5651d',
+      advanceOrder: 13,
+      behavior: { type: 'none' }
+    },
+
+    {
+      id: 'symphony',
+      name: '交响',
+      symbol: '💘',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#c2185b',
+      advanceOrder: 14,
+      behavior: { type: 'none' }
+    },
     {
       id: 'fortress',
       name: '堡垒兵',
