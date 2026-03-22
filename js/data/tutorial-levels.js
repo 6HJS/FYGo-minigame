@@ -30,12 +30,13 @@ module.exports = [
     pieceType: 'fog',
     boardConfig: square9,
     cards: ['fog'],
-    tips: '把迷雾落在天元，让对手下一回合视野受限。',
+    tips: '把迷雾落在任意位置，让对手下一回合视野受限。',
     presetPieces: [],
+    autoDelayWinMs: 1200,
     goal: {
       allOf: [
         { type: 'card_used', pieceType: 'fog' },
-        { type: 'fog_center', row: 4, col: 4 }
+        { type: 'fog_active' }
       ]
     }
   },
@@ -45,7 +46,8 @@ module.exports = [
     pieceType: 'rebirth',
     boardConfig: square9,
     cards: ['rebirth'],
-    tips: '先落下重生子，再把重生点绑定到右边的空位。',
+    tips: '先把重生子落在天元，再选择一个重生点。除了天元右边紧挨着那一格，其他空位都能成功。',
+    autoResolveRebirthTest: true,
     presetPieces: [
       { row: 5, col: 4, color: W },
       { row: 3, col: 4, color: W },
@@ -54,8 +56,7 @@ module.exports = [
     goal: {
       allOf: [
         { type: 'card_used', pieceType: 'rebirth' },
-        { type: 'cell_type', row: 4, col: 4, pieceType: 'normal', color: B },
-        { type: 'rebirth_target', sourceRow: 4, sourceCol: 4, targetRow: 4, targetCol: 5 }
+        { type: 'tutorial_flag', key: 'rebirthSucceeded' }
       ]
     }
   },
@@ -83,15 +84,18 @@ module.exports = [
     pieceType: 'contract',
     boardConfig: square9,
     cards: ['contract'],
-    tips: '先落下契约子，再点击右侧的白棋建立契约。',
+    tips: '先把契约子落在天元，再点击右侧的白棋建立契约。教学会自动让左侧白骑兵冲死黑子，引发同归于尽。',
+    autoResolveContractTrigger: true,
     presetPieces: [
+      { row: 4, col: 2, color: W, type: 'cavalry', dir: 'R' },
       { row: 4, col: 5, color: W }
     ],
     goal: {
       allOf: [
         { type: 'card_used', pieceType: 'contract' },
-        { type: 'contract_linked', a: [4, 4], b: [4, 5] },
-        { type: 'cell_type', row: 4, col: 4, pieceType: 'normal', color: B }
+        { type: 'cell_exists', row: 4, col: 4, color: W, pieceType: 'cavalry', dir: 'R' },
+        { type: 'cell_empty', row: 4, col: 5 },
+        { type: 'piece_count', color: B, equals: 0 }
       ]
     }
   },

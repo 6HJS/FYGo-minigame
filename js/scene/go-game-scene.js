@@ -49,6 +49,7 @@ export default class GoGameScene {
     this.tutorialIndex = -1;
     this.tutorialPlayerColor = BLACK;
     this.returnScene = null;
+    this.pendingTutorialRebirthTimeout = null;
 
     this.initSafeLayout();
     this.resetGame();
@@ -154,6 +155,10 @@ export default class GoGameScene {
   }
 
   applyTutorialSetup(level) {
+    if (this.pendingTutorialRebirthTimeout) {
+      clearTimeout(this.pendingTutorialRebirthTimeout);
+      this.pendingTutorialRebirthTimeout = null;
+    }
     this.currentPlayer = this.tutorialPlayerColor;
     this.cardLoadout = this.makeTutorialCardLoadout(level.cards || [level.pieceType]);
     this.enabledCardTypes = (level.cards || [level.pieceType]).slice();
@@ -164,6 +169,8 @@ export default class GoGameScene {
     this.clearPendingPersuaderPlacement();
     this.contractLinks = [];
     this.fogState = null;
+    this.tutorialFogPreviewUntil = 0;
+    this.tutorialFlags = {};
 
     const presetPieces = Array.isArray(level.presetPieces) ? level.presetPieces : [];
     for (const item of presetPieces) {
@@ -259,6 +266,9 @@ export default class GoGameScene {
       case 'fog_center':
         return !!(this.fogState && this.fogState.row === condition.row && this.fogState.col === condition.col && this.fogState.active);
 
+      case 'fog_active':
+        return !!(this.fogState && this.fogState.active);
+
       case 'rebirth_target': {
         const cell = this.getBoardCell(condition.sourceRow, condition.sourceCol);
         return !!(this.isPiece(cell) && cell.rebirthReady && cell.rebirthTarget && cell.rebirthTarget.row === condition.targetRow && cell.rebirthTarget.col === condition.targetCol);
@@ -274,6 +284,9 @@ export default class GoGameScene {
         );
       }
 
+      case 'tutorial_flag':
+        return !!(this.tutorialFlags && this.tutorialFlags[condition.key]);
+
       default:
         return false;
     }
@@ -283,6 +296,45 @@ export default class GoGameScene {
     if (!this.isTutorialMode || !this.tutorialLevel || !this.tutorialLevel.goal) return false;
     const list = Array.isArray(this.tutorialLevel.goal.allOf) ? this.tutorialLevel.goal.allOf : [];
     return list.every((condition) => this.matchesTutorialCondition(condition));
+  }
+
+  runTutorialRebirthTest() {
+    if (!this.isTutorialMode || !this.tutorialLevel || !this.tutorialLevel.autoResolveRebirthTest) return;
+
+    this.tutorialFlags = this.tutorialFlags || {};
+    this.tutorialFlags.rebirthSucceeded = false;
+
+    const center = this.getBoardCell(4, 4);
+    if (!this.isPiece(center) || !center.rebirthReady || !center.rebirthTarget) {
+      this.statusMessage = '重生教学中，请先把重生子落在天元，再选择重生点';
+      return;
+    }
+
+    const target = { ...center.rebirthTarget };
+    const savedPlayer = this.currentPlayer;
+    this.currentPlayer = WHITE;
+    const ok = this.tryPlacePiece(4, 5, { color: WHITE, type: 'normal', dir: null });
+    this.currentPlayer = savedPlayer;
+
+    const targetCell = this.getBoardCell(target.row, target.col);
+    const rightCell = this.getBoardCell(4, 5);
+    const success = ok &&
+      !(target.row === 4 && target.col === 5) &&
+      this.getBoardCell(4, 4) === EMPTY &&
+      this.isPiece(rightCell) &&
+      rightCell.color === WHITE &&
+      this.isPiece(targetCell) &&
+      targetCell.color === BLACK;
+
+    this.tutorialFlags.rebirthSucceeded = success;
+
+    if (success) {
+      this.statusMessage = `白棋已在天元右侧提子，黑棋成功重生到（${target.row + 1}, ${target.col + 1}）`;
+    } else if (ok && target.row === 4 && target.col === 5) {
+      this.statusMessage = '白棋占住了你选的重生点，重生失败；请重开后改选别处';
+    } else if (ok) {
+      this.statusMessage = '白棋已在天元右侧提子，但黑棋没有成功重生；请重开后改选别处';
+    }
   }
 
   handleTutorialPostAction(triggerType, piece = null) {
@@ -302,11 +354,85 @@ export default class GoGameScene {
       }
     }
 
+    if (piece && piece.type === 'fog' && this.isTutorialMode) {
+      this.tutorialFogPreviewUntil = Date.now() + 1200;
+    }
+
+    if (piece && piece.type === 'rebirth' && this.tutorialLevel.autoResolveRebirthTest) {
+      if (this.pendingTutorialRebirthTimeout) {
+        clearTimeout(this.pendingTutorialRebirthTimeout);
+      }
+      this.statusMessage = '重生点已绑定，2 秒后白棋会在天元右侧落子并检验重生';
+      this.currentPlayer = this.tutorialPlayerColor;
+      this.previousBoardKey = this.getBoardKey(this.board);
+      this.pendingTutorialRebirthTimeout = setTimeout(() => {
+        this.pendingTutorialRebirthTimeout = null;
+        if (!this.isTutorialMode || !this.tutorialLevel || !this.tutorialLevel.autoResolveRebirthTest) return;
+        this.runTutorialRebirthTest();
+        this.currentPlayer = this.tutorialPlayerColor;
+        this.previousBoardKey = this.getBoardKey(this.board);
+
+        if (this.checkTutorialGoal()) {
+          const delayMs = Number(this.tutorialLevel.autoDelayWinMs || 0);
+          if (delayMs > 0) {
+            setTimeout(() => {
+              if (this.isTutorialMode && this.tutorialLevel && this.checkTutorialGoal()) {
+                this.completeTutorialLevel();
+              }
+            }, delayMs);
+          } else {
+            this.completeTutorialLevel();
+          }
+        }
+      }, 2000);
+      return;
+    }
+
+    if (piece && piece.type === 'contract' && this.tutorialLevel.autoResolveContractTrigger) {
+      this.statusMessage = '契约已建立，1 秒后左侧白骑兵会自动冲锋，触发同归于尽';
+      this.currentPlayer = this.tutorialPlayerColor;
+      this.previousBoardKey = this.getBoardKey(this.board);
+      setTimeout(() => {
+        if (!this.isTutorialMode || !this.tutorialLevel || !this.tutorialLevel.autoResolveContractTrigger) return;
+        this.advanceSpecialPieces();
+        const contractInfo = this.resolveContracts(false);
+        if (contractInfo.chainKillCount > 0) {
+          this.statusMessage = `契约触发，同归于尽 ${contractInfo.chainKillCount} 枚`;
+        } else {
+          this.statusMessage = '白骑兵已冲锋，请检查契约是否触发';
+        }
+        this.currentPlayer = this.tutorialPlayerColor;
+        this.previousBoardKey = this.getBoardKey(this.board);
+        if (this.checkTutorialGoal()) {
+          const delayMs = Number(this.tutorialLevel.autoDelayWinMs || 0);
+          if (delayMs > 0) {
+            setTimeout(() => {
+              if (this.isTutorialMode && this.tutorialLevel && this.checkTutorialGoal()) {
+                this.completeTutorialLevel();
+              }
+            }, delayMs);
+          } else {
+            this.completeTutorialLevel();
+          }
+        }
+      }, 1000);
+      return;
+    }
+
     this.currentPlayer = this.tutorialPlayerColor;
     this.previousBoardKey = this.getBoardKey(this.board);
 
     if (this.checkTutorialGoal()) {
-      this.completeTutorialLevel();
+      const delayMs = Number(this.tutorialLevel.autoDelayWinMs || 0);
+      if (delayMs > 0) {
+        setTimeout(() => {
+          if (this.isTutorialMode && this.tutorialLevel && this.checkTutorialGoal()) {
+            this.completeTutorialLevel();
+          }
+        }, delayMs);
+      } else {
+        this.completeTutorialLevel();
+      }
     }
   }
 
@@ -635,7 +761,12 @@ export default class GoGameScene {
       return false;
     }
 
-    this.board[row][col] = createPiece(pending.color, target.type, target.dir, target.id, { ...target, color: undefined, type: undefined, dir: undefined, id: undefined });
+    const preservedTarget = { ...target };
+    delete preservedTarget.color;
+    delete preservedTarget.type;
+    delete preservedTarget.dir;
+    delete preservedTarget.id;
+    this.board[row][col] = createPiece(pending.color, target.type, target.dir, target.id, preservedTarget);
     this.normalizePieceAt(source.row, source.col);
 
     const vanishedCount = this.resolveDeadGroupsAfterGravity();
@@ -2137,8 +2268,8 @@ export default class GoGameScene {
         const to = this.boardToScreen(cell.rebirthTarget.row, cell.rebirthTarget.col);
 
         ctx.save();
-        ctx.strokeStyle = 'rgba(46, 139, 87, 0.75)';
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgba(0, 255, 136, 0.95)';
+        ctx.lineWidth = 4;
         ctx.setLineDash([6, 5]);
         ctx.beginPath();
         ctx.moveTo(from.x, from.y);
@@ -2148,8 +2279,8 @@ export default class GoGameScene {
 
         ctx.beginPath();
         ctx.arc(to.x, to.y, Math.max(6, this.cellSize * 0.18), 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(46, 139, 87, 0.95)';
-        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = 'rgba(0, 255, 136, 1)';
+        ctx.lineWidth = 4;
         ctx.stroke();
 
         ctx.fillStyle = '#2e8b57';
@@ -2163,8 +2294,15 @@ export default class GoGameScene {
   }
 
   drawFogOverlay() {
-    if (!this.isFogActiveForPlayer(this.currentPlayer)) return;
     if (!this.fogState) return;
+
+    const tutorialPreview =
+      this.isTutorialMode &&
+      this.tutorialLevel &&
+      this.tutorialLevel.pieceType === 'fog' &&
+      Date.now() < (this.tutorialFogPreviewUntil || 0);
+
+    if (!tutorialPreview && !this.isFogActiveForPlayer(this.currentPlayer)) return;
   
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
@@ -2182,6 +2320,7 @@ export default class GoGameScene {
         ctx.font = `${Math.max(12, this.cellSize * 0.34)}px Arial`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
+        ctx.fillText('☁', x, y);
         ctx.restore();
       }
     }
