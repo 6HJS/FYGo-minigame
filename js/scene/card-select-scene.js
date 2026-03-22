@@ -21,6 +21,13 @@ export default class CardSelectScene {
     this.selectedTypes = [];
     this.selectedBoard = null;
 
+    this.scrollY = 0;
+    this.maxScrollY = 0;
+    this.touchStartY = 0;
+    this.touchStartScrollY = 0;
+    this.isDraggingPool = false;
+    this.didDrag = false;
+
     this.initLayout();
   }
 
@@ -48,16 +55,19 @@ export default class CardSelectScene {
       h: this.slotH
     }));
 
-    this.poolTop = this.slotAreaY + this.slotH + 40;
-    this.cardW = SCREEN_WIDTH - 64;
+    this.poolTitleY = this.slotAreaY + this.slotH + 40;
+    this.poolViewport = {
+      x: 24,
+      y: this.poolTitleY + 20,
+      w: SCREEN_WIDTH - 48,
+      h: Math.max(120, SCREEN_HEIGHT - (this.poolTitleY + 20) - 108)
+    };
+
+    this.cardW = this.poolViewport.w - 16;
     this.cardH = 70;
     this.cardGap = 14;
-    this.poolRects = this.pool.map((_, i) => ({
-      x: 32,
-      y: this.poolTop + i * (this.cardH + this.cardGap),
-      w: this.cardW,
-      h: this.cardH
-    }));
+    this.cardX = this.poolViewport.x + 8;
+    this.poolContentTop = this.poolViewport.y + 8;
 
     this.startBtn = {
       x: 40,
@@ -65,12 +75,23 @@ export default class CardSelectScene {
       w: SCREEN_WIDTH - 80,
       h: 56
     };
+
+    this.updateScrollBounds();
+  }
+
+  updateScrollBounds() {
+    const contentH = this.pool.length > 0
+      ? this.pool.length * this.cardH + (this.pool.length - 1) * this.cardGap + 16
+      : 16;
+    this.maxScrollY = Math.max(0, contentH - this.poolViewport.h);
+    this.scrollY = Math.max(0, Math.min(this.scrollY, this.maxScrollY));
   }
 
   onEnter() {
     if (this.goGameScene) {
       this.selectedTypes = (this.goGameScene.getEnabledCardTypes() || []).slice(0, this.maxSlots);
     }
+    this.updateScrollBounds();
   }
 
   setSelectedBoard(board) {
@@ -103,6 +124,15 @@ export default class CardSelectScene {
       cardTypes: this.selectedTypes
     });
     this.sceneManager.switchTo(this.goGameScene);
+  }
+
+  getPoolCardRect(index) {
+    return {
+      x: this.cardX,
+      y: this.poolContentTop + index * (this.cardH + this.cardGap) - this.scrollY,
+      w: this.cardW,
+      h: this.cardH
+    };
   }
 
   drawSlot(rect, type, index) {
@@ -167,26 +197,90 @@ export default class CardSelectScene {
     ctx.restore();
   }
 
+  drawScrollBar() {
+    if (this.maxScrollY <= 0) return;
+
+    const trackX = this.poolViewport.x + this.poolViewport.w - 6;
+    const trackY = this.poolViewport.y + 8;
+    const trackH = this.poolViewport.h - 16;
+    const thumbH = Math.max(28, trackH * (this.poolViewport.h / (this.poolViewport.h + this.maxScrollY)));
+    const thumbTravel = trackH - thumbH;
+    const thumbY = trackY + (this.scrollY / this.maxScrollY) * thumbTravel;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.14)';
+    ctx.fillRect(trackX, trackY, 4, trackH);
+    ctx.fillStyle = 'rgba(245,230,169,0.75)';
+    ctx.fillRect(trackX, thumbY, 4, thumbH);
+    ctx.restore();
+  }
+
   onTouchStart(e) {
     const touch = e.touches[0];
     const x = touch.clientX;
     const y = touch.clientY;
+
+    this.didDrag = false;
+    this.isDraggingPool = inRect(
+      x,
+      y,
+      this.poolViewport.x,
+      this.poolViewport.y,
+      this.poolViewport.w,
+      this.poolViewport.h
+    );
+
+    if (this.isDraggingPool) {
+      this.touchStartY = y;
+      this.touchStartScrollY = this.scrollY;
+      return;
+    }
 
     if (inRect(x, y, this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h)) {
       if (this.boardSelectScene) this.sceneManager.switchTo(this.boardSelectScene);
       return;
     }
 
-    for (let i = 0; i < this.poolRects.length; i++) {
-      const rect = this.poolRects[i];
-      if (!inRect(x, y, rect.x, rect.y, rect.w, rect.h)) continue;
-      this.toggleType(this.pool[i].id);
-      return;
-    }
-
     if (inRect(x, y, this.startBtn.x, this.startBtn.y, this.startBtn.w, this.startBtn.h)) {
       this.startMatch();
     }
+  }
+
+  onTouchMove(e) {
+    if (!this.isDraggingPool) return;
+
+    const touch = e.touches[0];
+    const deltaY = touch.clientY - this.touchStartY;
+    const nextScrollY = this.touchStartScrollY - deltaY;
+    this.scrollY = Math.max(0, Math.min(nextScrollY, this.maxScrollY));
+
+    if (Math.abs(deltaY) > 6) {
+      this.didDrag = true;
+    }
+  }
+
+  onTouchEnd(e) {
+    const touch = (e.changedTouches && e.changedTouches[0]) || (e.touches && e.touches[0]);
+    if (!touch) {
+      this.isDraggingPool = false;
+      return;
+    }
+
+    const x = touch.clientX;
+    const y = touch.clientY;
+
+    if (this.isDraggingPool && !this.didDrag) {
+      for (let i = 0; i < this.pool.length; i++) {
+        const rect = this.getPoolCardRect(i);
+        const visible = rect.y + rect.h >= this.poolViewport.y && rect.y <= this.poolViewport.y + this.poolViewport.h;
+        if (!visible) continue;
+        if (!inRect(x, y, rect.x, rect.y, rect.w, rect.h)) continue;
+        this.toggleType(this.pool[i].id);
+        break;
+      }
+    }
+
+    this.isDraggingPool = false;
   }
 
   update() {}
@@ -219,11 +313,30 @@ export default class CardSelectScene {
 
     ctx.fillStyle = '#f5e6a9';
     ctx.font = 'bold 22px Arial';
-    ctx.fillText('卡牌池', SCREEN_WIDTH / 2, this.poolTop - 20);
+    ctx.fillText('卡牌池', SCREEN_WIDTH / 2, this.poolTitleY);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fillRect(this.poolViewport.x, this.poolViewport.y, this.poolViewport.w, this.poolViewport.h);
+    ctx.strokeStyle = 'rgba(245,230,169,0.18)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(this.poolViewport.x, this.poolViewport.y, this.poolViewport.w, this.poolViewport.h);
+    ctx.restore();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(this.poolViewport.x, this.poolViewport.y, this.poolViewport.w, this.poolViewport.h);
+    ctx.clip();
 
     for (let i = 0; i < this.pool.length; i++) {
-      this.drawPoolCard(this.poolRects[i], this.pool[i]);
+      const rect = this.getPoolCardRect(i);
+      if (rect.y > this.poolViewport.y + this.poolViewport.h) continue;
+      if (rect.y + rect.h < this.poolViewport.y) continue;
+      this.drawPoolCard(rect, this.pool[i]);
     }
+    ctx.restore();
+
+    this.drawScrollBar();
 
     drawButton(this.startBtn.x, this.startBtn.y, this.startBtn.w, this.startBtn.h, '#27ae60', '进入对局', 24);
   }

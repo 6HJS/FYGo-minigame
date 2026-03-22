@@ -106,6 +106,33 @@ function handleBlastArea(scene, row, col, piece, pieceDef) {
   };
 }
 
+function handleDigFront(scene, row, col, piece, pieceDef) {
+  const rule = pieceDef.behavior || {};
+  const offsets = getOffsetsByDir(rule.offsetsByDir, piece.dir);
+  const area = getAreaByOffsets(scene, row, col, offsets);
+
+  let destroyedCellsCount = 0;
+
+  for (const [r, c] of area) {
+    if (!scene.isPlayablePoint(r, c)) continue;
+    if (scene.isPiece(scene.board[r][c])) continue;
+    if (scene.board[r][c] === scene.DESTROYED) continue;
+
+    scene.board[r][c] = scene.DESTROYED;
+    destroyedCellsCount += 1;
+  }
+
+  const downgrade = rule.degradeTo || 'normal';
+  scene.board[row][col] = createPiece(piece.color, downgrade, null, piece.id);
+  scene.lastMove = { row, col };
+
+  return {
+    destroyedCellsCount,
+    dugCount: destroyedCellsCount,
+    transformed: true
+  };
+}
+
 function runAdvanceForPiece(scene, row, col, piece, pieceDef) {
   const behaviorType = pieceDef.behavior?.type || 'none';
 
@@ -115,6 +142,9 @@ function runAdvanceForPiece(scene, row, col, piece, pieceDef) {
 
     case 'blast_area':
       return handleBlastArea(scene, row, col, piece, pieceDef);
+
+    case 'dig_front':
+      return handleDigFront(scene, row, col, piece, pieceDef);
 
     case 'none':
     default:

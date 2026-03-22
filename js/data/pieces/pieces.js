@@ -68,6 +68,26 @@ module.exports = {
       buttonActiveColor: '#4b2e83',
       advanceOrder: 12,
       behavior: { type: 'none' }
+    },
+    {
+      id: 'fortress',
+      name: '堡垒兵',
+      symbol: '🪏',
+      needsDirection: true,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#6c5b3b',
+      advanceOrder: 18,
+      behavior: {
+        type: 'dig_front',
+        degradeTo: 'normal',
+        offsetsByDir: {
+          U: [[-1,-1],[-1,0],[-1,1]],
+          D: [[1,-1],[1,0],[1,1]],
+          L: [[-1,-1],[0,-1],[1,-1]],
+          R: [[-1,1],[0,1],[1,1]]
+        }
+      }
     }
   ]
 };

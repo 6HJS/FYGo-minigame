@@ -771,6 +771,7 @@ export default class GoGameScene {
     let totalExploded = 0;
     let totalDisabled = 0;
     let totalDestroyedCells = 0;
+    let totalDugCells = 0;
 
     for (const item of queue) {
       const cell = this.board[item.row][item.col];
@@ -783,11 +784,14 @@ export default class GoGameScene {
       if (out.exploded) totalExploded += out.exploded.length;
       if (out.disabledCount) totalDisabled += out.disabledCount;
       if (out.destroyedCellsCount) totalDestroyedCells += out.destroyedCellsCount;
+      if (out.dugCount) totalDugCells += out.dugCount;
     }
 
     this.previousBoardKey = this.getBoardKey(this.board);
 
-    if (totalDestroyedCells > 0) {
+    if (totalDugCells > 0) {
+      this.statusMessage = `堡垒兵挖掉 ${totalDugCells} 格`;
+    } else if (totalDestroyedCells > 0) {
       this.statusMessage = `特殊兵种触发，清空 ${totalDestroyedCells} 格`;
     } else if (totalDisabled > 0) {
       this.statusMessage = `有 ${totalDisabled} 枚特殊兵种失去能力`;
