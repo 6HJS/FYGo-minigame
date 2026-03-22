@@ -10,10 +10,10 @@ const SAFE_TOP = windowInfo.safeArea
   : windowInfo.statusBarHeight || 20;
 
 export default class TutorialScene {
-  constructor(sceneManager, homeScene, gameScene) {
+  constructor(sceneManager, homeScene, goGameScene) {
     this.sceneManager = sceneManager;
     this.homeScene = homeScene;
-    this.gameScene = gameScene;
+    this.goGameScene = goGameScene;
 
     this.scrollY = 0;
     this.lastTouchY = null;
@@ -76,8 +76,8 @@ export default class TutorialScene {
     }
 
     if (index === 0) {
-      this.gameScene.startLevel1();
-      this.sceneManager.switchTo(this.gameScene);
+      this.goGameScene.startLevel1();
+      this.sceneManager.switchTo(this.goGameScene);
     } else {
       wx.showToast({
         title: `第${index + 1}关暂未开放`,

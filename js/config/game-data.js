@@ -1,4 +1,4 @@
-const boardConfig = require('../data/boards/dumbbell.js');
+const boardConfig = require('../data/boards/square9.js');
 const pieceConfig = require('../data/pieces/pieces.js');
 
 function buildPieceMap(pieceList) {

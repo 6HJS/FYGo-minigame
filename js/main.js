@@ -1,14 +1,11 @@
 import './render';
 import Music from './runtime/music';
-import DataBus from './databus';
 
 import SceneManager from './scene/scene-manager';
 import HomeScene from './scene/home-scene';
 import TutorialScene from './scene/tutorial-scene';
-import GameScene from './scene/game-scene';
 import GoGameScene from './scene/go-game-scene';
 
-GameGlobal.databus = new DataBus();
 GameGlobal.musicManager = new Music();
 
 export default class Main {
@@ -17,9 +14,12 @@ export default class Main {
 
     this.sceneManager = new SceneManager();
 
-    this.tutorialScene = new TutorialScene(this.sceneManager, null, null);
-    this.gameScene = new GameScene(this.sceneManager, this.tutorialScene);
     this.goGameScene = new GoGameScene(this.sceneManager);
+    this.tutorialScene = new TutorialScene(
+      this.sceneManager,
+      null,
+      this.goGameScene
+    );
 
     this.homeScene = new HomeScene(
       this.sceneManager,
@@ -27,19 +27,12 @@ export default class Main {
       this.goGameScene
     );
 
-    // 互相补引用
-    this.homeScene.tutorialScene = this.tutorialScene;
-    this.homeScene.goGameScene = this.goGameScene;
-
     this.tutorialScene.homeScene = this.homeScene;
-    this.tutorialScene.gameScene = this.gameScene;
-
     this.goGameScene.homeScene = this.homeScene;
 
     this.sceneManager.switchTo(this.homeScene);
 
     this.initEvent();
-
     this.aniId = requestAnimationFrame(this.bindLoop);
   }
 

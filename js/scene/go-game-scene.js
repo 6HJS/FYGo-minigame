@@ -127,6 +127,10 @@ export default class GoGameScene {
 
     this.calcBoardLayout();
   }
+  startLevel1() {
+    this.resetGame();
+    this.statusMessage = '进入教学关卡 1';
+  }
 
   calcBoardLayout() {
     const validPoints = this.getAllValidPoints();
@@ -723,7 +727,7 @@ export default class GoGameScene {
         if (!this.isPlayablePoint(row, col)) continue;
         const { x, y } = this.boardToScreen(row, col);
         const isTengen = row === centerRow && col === centerCol;
-        const radius = isTengen ? Math.max(4.5, this.cellSize * 0.16) : 0;
+        const radius = isTengen ? Math.max(4.5, this.cellSize * 0.16) : Math.max(0.2, this.cellSize * 0.04);
 
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
