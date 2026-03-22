@@ -182,6 +182,7 @@ export default class GoGameScene {
     this.contractLinks = [];
     this.pendingContractPlacement = null;
     this.pendingRebirthPlacement = null;
+    this.pendingPersuaderPlacement = null;
     this.fogState = null;
 
     this.calcBoardLayout();
@@ -329,7 +330,7 @@ export default class GoGameScene {
     this.board[row][col] = EMPTY;
 
     if (
-      cell.type === 'rebirth' &&
+      cell.rebirthReady &&
       target &&
       this.isPlayablePoint(target.row, target.col) &&
       this.board[target.row][target.col] === EMPTY &&
@@ -358,6 +359,72 @@ export default class GoGameScene {
 
   clearPendingRebirthPlacement() {
     this.pendingRebirthPlacement = null;
+  }
+
+  clearPendingPersuaderPlacement() {
+    this.pendingPersuaderPlacement = null;
+  }
+
+  cancelPendingPersuaderPlacement() {
+    const pending = this.pendingPersuaderPlacement;
+    if (!pending) return false;
+
+    this.removePieceById(pending.pieceId);
+    this.refundCard('persuader');
+    this.clearPendingPersuaderPlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.previousBoardKey = this.getBoardKey(this.board);
+    this.lastMove = null;
+    this.lastCaptured = [];
+    this.statusMessage = '已取消说客落子';
+    return true;
+  }
+
+  hasAdjacentEnemy(row, col, player) {
+    const neighbors = this.getNeighborsForBoard(this.board, row, col);
+    for (const [nr, nc] of neighbors) {
+      const cell = this.board[nr][nc];
+      if (this.isPiece(cell) && cell.color !== player) return true;
+    }
+    return false;
+  }
+
+  bindPendingPersuaderToTarget(row, col) {
+    const pending = this.pendingPersuaderPlacement;
+    if (!pending) return false;
+
+    const source = this.findPiecePositionById(pending.pieceId);
+    if (!source || !this.isPiece(source.cell) || source.cell.color !== pending.color) {
+      this.clearPendingPersuaderPlacement();
+      this.statusMessage = '说客已不存在';
+      return false;
+    }
+
+    const isAdjacent = Math.abs(source.row - row) + Math.abs(source.col - col) === 1;
+    const target = this.isPlayablePoint(row, col) ? this.board[row][col] : null;
+
+    if (!isAdjacent || !this.isPiece(target) || target.color !== this.getOpponent(pending.color)) {
+      this.statusMessage = '请选择说客上下左右相邻的一枚敌子';
+      return false;
+    }
+
+    this.board[row][col] = createPiece(pending.color, target.type, target.dir, target.id, { ...target, color: undefined, type: undefined, dir: undefined, id: undefined });
+    this.normalizePieceAt(source.row, source.col);
+
+    const vanishedCount = this.resolveDeadGroupsAfterGravity();
+    this.clearPendingPersuaderPlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.currentPlayer = this.getOpponent(this.currentPlayer);
+    this.previousBoardKey = this.getBoardKey(this.board);
+
+    if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
+      this.clearFog();
+    }
+
+    this.statusMessage = vanishedCount > 0
+      ? `说客生效，转化 1 枚，消失 ${vanishedCount} 枚`
+      : '说客生效，转化 1 枚';
+    return true;
   }
 
   cancelPendingRebirthPlacement() {
@@ -407,14 +474,22 @@ export default class GoGameScene {
       }
     );
 
+    this.normalizePieceAt(found.row, found.col, {
+      rebirthTarget: { row, col },
+      rebirthReady: true
+    });
+
     this.clearPendingRebirthPlacement();
     this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
     this.currentPlayer = this.getOpponent(this.currentPlayer);
     this.previousBoardKey = this.getBoardKey(this.board);
+    const turnStartInfo = this.resolveTurnStartSpecials(this.currentPlayer);
     if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
       this.clearFog();
     }
-    this.statusMessage = `重生点已绑定：(${row + 1}, ${col + 1})`;
+    this.statusMessage = turnStartInfo.persuadedCount > 0
+      ? `重生点已绑定，同时说客转化 ${turnStartInfo.persuadedCount} 枚`
+      : `重生点已绑定：(${row + 1}, ${col + 1})`;
     return true;
   }
 
@@ -480,13 +555,20 @@ export default class GoGameScene {
       remaining: this.contractDuration
     });
 
+    if (this.isPiece(this.board[pending.row][pending.col])) {
+      this.normalizePieceAt(pending.row, pending.col);
+    }
+
     this.clearPendingContractPlacement();
     this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
     this.currentPlayer = this.getOpponent(this.currentPlayer);
+    const turnStartInfo = this.resolveTurnStartSpecials(this.currentPlayer);
     if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
       this.clearFog();
     }
-    this.statusMessage = `契约已生效：${this.contractDuration}回合内同生共死`;
+    this.statusMessage = turnStartInfo.persuadedCount > 0
+      ? `契约已生效，同时说客转化 ${turnStartInfo.persuadedCount} 枚`
+      : `契约已生效：${this.contractDuration}回合内同生共死`;
     return true;
   }
 
@@ -569,6 +651,8 @@ export default class GoGameScene {
       this.consumeCard(piece.type);
     }
 
+    this.armPlacedPiece(row, col, piece);
+
     const gravityInfo = piece.type === 'gravity'
       ? this.applyGravityEffect(row, col)
       : { movedCount: 0, vanishedCount: 0 };
@@ -579,6 +663,10 @@ export default class GoGameScene {
       ? this.applyReverseEffect(row, col)
       : { flippedCount: 0, vanishedCount: 0 };
 
+    if (piece.type === 'gravity' || piece.type === 'repulsion' || piece.type === 'reverse') {
+      this.normalizePieceAt(row, col);
+    }
+
     this.advanceSpecialPieces({
       skipNewlyPlacedType: piece.type,
       skipNewlyPlacedKey: `${row},${col}`
@@ -586,18 +674,23 @@ export default class GoGameScene {
 
     const contractInfo = this.resolveContracts(advanceContracts);
 
+    if (piece.type === 'fog') {
+      this.activateFog(row, col, piece.color);
+      this.normalizePieceAt(row, col);
+    }
+
     if (endTurn) {
       this.currentPlayer = this.getOpponent(this.currentPlayer);
     }
 
-    if (piece.type === 'fog') {
-      this.activateFog(row, col, piece.color);
-    }
+    const turnStartInfo = this.resolveTurnStartSpecials(this.currentPlayer);
 
     if (piece.type === 'rebirth' && !endTurn) {
       this.statusMessage = '请选择一个空位作为重生点';
     } else if (contractInfo.chainKillCount > 0) {
       this.statusMessage = `契约触发，同归于尽 ${contractInfo.chainKillCount} 枚`;
+    } else if (turnStartInfo.persuadedCount > 0 || turnStartInfo.vanishedCount > 0) {
+      this.statusMessage = `说客发动，转化 ${turnStartInfo.persuadedCount} 枚${turnStartInfo.vanishedCount > 0 ? `，消失 ${turnStartInfo.vanishedCount} 枚` : ''}`;
     } else if (piece.type === 'gravity') {
       if (gravityInfo.movedCount > 0 || gravityInfo.vanishedCount > 0) {
         this.statusMessage = `引力触发，拉动 ${gravityInfo.movedCount} 枚${gravityInfo.vanishedCount > 0 ? `，消失 ${gravityInfo.vanishedCount} 枚` : ''}`;
@@ -616,6 +709,8 @@ export default class GoGameScene {
       } else {
         this.statusMessage = '逆转触发，但周围没有可翻转的棋子';
       }
+    } else if (piece.type === 'persuader' && !endTurn) {
+      this.statusMessage = '请选择说客上下左右相邻的一枚敌子';
     } else if (piece.type === 'fog') {
       this.statusMessage = '迷雾已展开：对手下一回合视野受限';
     } else if (result.captured.length > 0) {
@@ -632,6 +727,60 @@ export default class GoGameScene {
   clearPendingSelection() {
     this.pendingPlacement = null;
     this.directionButtons = null;
+  }
+
+  normalizePieceAt(row, col, extra = null) {
+    const cell = this.board[row][col];
+    if (!this.isPiece(cell)) return false;
+
+    const preserved = { ...cell, ...(extra || {}) };
+    delete preserved.color;
+    delete preserved.type;
+    delete preserved.dir;
+    delete preserved.id;
+
+    this.board[row][col] = createPiece(cell.color, 'normal', null, cell.id, preserved);
+    return true;
+  }
+
+  armPlacedPiece(row, col, piece) {
+    if (piece.type !== 'persuader') return;
+  }
+
+  resolveTurnStartSpecials(player) {
+    const activations = [];
+
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = this.board[row][col];
+        if (!this.isPiece(cell)) continue;
+        if (false && cell.type === 'persuader' && cell.armed && cell.color === player) {
+          activations.push({ row, col, cell: { ...cell } });
+        }
+      }
+    }
+
+    if (activations.length === 0) return { persuadedCount: 0, vanishedCount: 0 };
+
+    let persuadedCount = 0;
+    for (const item of activations) {
+      const live = this.board[item.row][item.col];
+      if (!this.isPiece(live) || live.type !== 'persuader' || !live.armed || live.color !== player) continue;
+
+      const neighbors = this.getNeighborsForBoard(this.board, item.row, item.col);
+      for (const [nr, nc] of neighbors) {
+        const target = this.board[nr][nc];
+        if (!this.isPiece(target) || target.color === player) continue;
+        this.board[nr][nc] = createPiece(player, target.type, target.dir, target.id, { ...target, color: undefined, type: undefined, dir: undefined, id: undefined });
+        persuadedCount += 1;
+      }
+
+      this.normalizePieceAt(item.row, item.col, { armed: false });
+    }
+
+    const vanishedCount = this.resolveDeadGroupsAfterGravity();
+    this.previousBoardKey = this.getBoardKey(this.board);
+    return { persuadedCount, vanishedCount };
   }
 
   onTouchStart(e) {
@@ -662,6 +811,11 @@ export default class GoGameScene {
         return;
       }
 
+      if (this.pendingPersuaderPlacement) {
+        this.cancelPendingPersuaderPlacement();
+        return;
+      }
+
       const card = this.getCardDataBySlot(slot.index);
       if (!card || card.used) return;
 
@@ -686,6 +840,16 @@ export default class GoGameScene {
         return;
       }
       this.bindPendingRebirthToTarget(point.row, point.col);
+      return;
+    }
+
+    if (this.pendingPersuaderPlacement) {
+      const point = this.screenToBoard(x, y);
+      if (!point) {
+        this.statusMessage = '请选择说客上下左右相邻的一枚敌子，或点下方卡牌取消';
+        return;
+      }
+      this.bindPendingPersuaderToTarget(point.row, point.col);
       return;
     }
 
@@ -720,6 +884,11 @@ export default class GoGameScene {
 
     if (this.nextPieceType === 'rebirth') {
       this.startRebirthPlacement(point.row, point.col);
+      return;
+    }
+
+    if (this.nextPieceType === 'persuader') {
+      this.startPersuaderPlacement(point.row, point.col);
       return;
     }
 
@@ -758,6 +927,11 @@ export default class GoGameScene {
 
     if (type === 'rebirth' && this.nextPieceType === type) {
       this.statusMessage = `已选中${pieceDef.name}卡：先落子，再点空位绑定重生点`;
+      return;
+    }
+
+    if (type === 'persuader' && this.nextPieceType === type) {
+      this.statusMessage = `已选中${pieceDef.name}卡：先落子，再点上下左右相邻的一枚敌子`;
       return;
     }
 
@@ -867,6 +1041,60 @@ export default class GoGameScene {
     };
     this.nextPieceType = 'rebirth';
     this.statusMessage = '请选择一个空位作为重生点，或点下方卡牌取消';
+  }
+
+  startPersuaderPlacement(row, col) {
+    if (!this.isPlayablePoint(row, col)) return;
+
+    if (!this.hasAvailableCard('persuader')) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = '这张卡已经用掉了';
+      return;
+    }
+
+    if (this.board[row][col] !== EMPTY) {
+      this.statusMessage = '此处已有棋子';
+      return;
+    }
+
+    if (!this.hasAdjacentEnemy(row, col, this.currentPlayer)) {
+      this.statusMessage = '说客必须落在至少贴邻一枚敌子的地方';
+      return;
+    }
+
+    const piece = {
+      color: this.currentPlayer,
+      type: 'persuader',
+      dir: null,
+      id: this.allocPieceId()
+    };
+
+    const result = this.simulatePlacePiece(this.board, row, col, piece, this.currentPlayer);
+    if (!result.ok) {
+      this.statusMessage = result.message || '落子失败';
+      return;
+    }
+
+    this.commitPlacement(row, col, piece, result, { endTurn: false, advanceContracts: true });
+
+    const source = this.findPiecePositionById(piece.id);
+    if (!source || !this.hasAdjacentEnemy(source.row, source.col, this.currentPlayer)) {
+      this.removePieceById(piece.id);
+      this.refundCard('persuader');
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.previousBoardKey = this.getBoardKey(this.board);
+      this.statusMessage = '说客落下后周围没有可说服的敌子';
+      return;
+    }
+
+    this.pendingPersuaderPlacement = {
+      row: source.row,
+      col: source.col,
+      color: this.currentPlayer,
+      pieceId: piece.id
+    };
+    this.nextPieceType = 'persuader';
+    this.statusMessage = '请选择说客上下左右相邻的一枚敌子，或点下方卡牌取消';
   }
 
   confirmSpecialPlacement(dir) {
@@ -1232,7 +1460,7 @@ export default class GoGameScene {
           if (cell === INVALID) return 'X';
           if (cell === DESTROYED) return '#';
           if (cell === EMPTY) return '.';
-          return `${cell.color}${cell.type}${cell.dir || '_'}`;
+          return `${cell.color}${cell.type}${cell.dir || '_'}${cell.armed ? 'A' : ''}${cell.rebirthReady && cell.rebirthTarget ? `@${cell.rebirthTarget.row}_${cell.rebirthTarget.col}` : ''}`;
         }).join(',')
       )
       .join('|');

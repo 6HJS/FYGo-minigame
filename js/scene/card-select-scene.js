@@ -163,7 +163,7 @@ export default class CardSelectScene {
     ctx.font = 'bold 18px Arial';
     ctx.fillText(def.name, rect.x + rect.w / 2, rect.y + 64);
     ctx.font = '12px Arial';
-    ctx.fillText(`已装入 ${index + 1}`, rect.x + rect.w / 2, rect.y + 92);
+    ctx.fillText('点击移除', rect.x + rect.w / 2, rect.y + 92);
     ctx.restore();
   }
 
@@ -241,6 +241,14 @@ export default class CardSelectScene {
       return;
     }
 
+    for (let i = 0; i < this.slotRects.length; i++) {
+      const rect = this.slotRects[i];
+      if (!inRect(x, y, rect.x, rect.y, rect.w, rect.h)) continue;
+      if (!this.selectedTypes[i]) return;
+      this.selectedTypes.splice(i, 1);
+      return;
+    }
+
     if (inRect(x, y, this.startBtn.x, this.startBtn.y, this.startBtn.w, this.startBtn.h)) {
       this.startMatch();
     }
@@ -305,7 +313,7 @@ export default class CardSelectScene {
 
     ctx.fillStyle = '#d8d8d8';
     ctx.font = '16px Arial';
-    ctx.fillText('从卡牌池中选择最多三张装入下方卡槽', SCREEN_WIDTH / 2, this.slotAreaY - 18);
+    ctx.fillText('从卡牌池中选择最多三张，点击上方卡槽也可移除', SCREEN_WIDTH / 2, this.slotAreaY - 18);
 
     for (let i = 0; i < this.slotRects.length; i++) {
       this.drawSlot(this.slotRects[i], this.selectedTypes[i], i);
