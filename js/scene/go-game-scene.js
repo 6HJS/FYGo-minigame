@@ -22,9 +22,9 @@ const DIRS = {
   R: { dr: 0, dc: 1 }
 };
 
-const BOARD_SHAPE = boardConfig.shape;
-const BOARD_ROWS = BOARD_SHAPE.length;
-const BOARD_COLS = BOARD_SHAPE[0].length;
+let BOARD_SHAPE = boardConfig.shape;
+let BOARD_ROWS = BOARD_SHAPE.length;
+let BOARD_COLS = BOARD_SHAPE[0].length;
 
 export default class GoGameScene {
   constructor(sceneManager) {
@@ -115,6 +115,48 @@ export default class GoGameScene {
 
   getEnabledCardTypes() {
     return Array.isArray(this.enabledCardTypes) ? this.enabledCardTypes : [];
+  }
+
+  setBoardConfig(boardConfig) {
+    if (!boardConfig || !Array.isArray(boardConfig.shape) || !boardConfig.shape.length) return;
+
+    this.boardConfig = boardConfig;
+    BOARD_SHAPE = boardConfig.shape;
+    BOARD_ROWS = BOARD_SHAPE.length;
+    BOARD_COLS = BOARD_SHAPE[0].length;
+
+    this.resetGame();
+  }
+
+  setEnabledCardTypes(cardTypes) {
+    const nextTypes = Array.isArray(cardTypes)
+      ? cardTypes
+          .filter((type) => type && type !== (this.pieceConfig.defaultPieceType || 'normal'))
+          .slice(0, this.maxCardSlots)
+      : [];
+
+    this.enabledCardTypes = nextTypes;
+    this.cardLoadout = this.createInitialCardLoadout();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.clearPendingSelection();
+    this.clearPendingContractPlacement();
+  }
+
+  prepareMatch(options = {}) {
+    if (options.boardConfig) {
+      this.boardConfig = options.boardConfig;
+      BOARD_SHAPE = this.boardConfig.shape;
+      BOARD_ROWS = BOARD_SHAPE.length;
+      BOARD_COLS = BOARD_SHAPE[0].length;
+    }
+
+    if (options.cardTypes) {
+      this.enabledCardTypes = options.cardTypes
+        .filter((type) => type && type !== (this.pieceConfig.defaultPieceType || 'normal'))
+        .slice(0, this.maxCardSlots);
+    }
+
+    this.resetGame();
   }
 
   resetGame() {

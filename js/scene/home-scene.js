@@ -5,10 +5,10 @@ const SCREEN_WIDTH = canvas.width;
 const SCREEN_HEIGHT = canvas.height;
 
 export default class HomeScene {
-  constructor(sceneManager, tutorialScene, goGameScene) {
+  constructor(sceneManager, tutorialScene, boardSelectScene) {
     this.sceneManager = sceneManager;
     this.tutorialScene = tutorialScene;
-    this.goGameScene = goGameScene;
+    this.boardSelectScene = boardSelectScene;
     this.bgm = "audio/bgm_title.mp3";
   }
 
@@ -31,7 +31,7 @@ export default class HomeScene {
     }
 
     if (inRect(x, y, btnX, btn2Y, btnW, btnH)) {
-      this.sceneManager.switchTo(this.goGameScene);
+      this.sceneManager.switchTo(this.boardSelectScene);
       return;
     }
 

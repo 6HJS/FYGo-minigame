@@ -5,6 +5,8 @@ import SceneManager from './scene/scene-manager';
 import HomeScene from './scene/home-scene';
 import TutorialScene from './scene/tutorial-scene';
 import GoGameScene from './scene/go-game-scene';
+import BoardSelectScene from './scene/board-select-scene';
+import CardSelectScene from './scene/card-select-scene';
 
 GameGlobal.musicManager = new Music();
 
@@ -15,6 +17,8 @@ export default class Main {
     this.sceneManager = new SceneManager();
 
     this.goGameScene = new GoGameScene(this.sceneManager);
+    this.boardSelectScene = new BoardSelectScene(this.sceneManager, this.goGameScene);
+    this.cardSelectScene = new CardSelectScene(this.sceneManager, this.goGameScene);
     this.tutorialScene = new TutorialScene(
       this.sceneManager,
       null,
@@ -24,11 +28,14 @@ export default class Main {
     this.homeScene = new HomeScene(
       this.sceneManager,
       this.tutorialScene,
-      this.goGameScene
+      this.boardSelectScene
     );
 
     this.tutorialScene.homeScene = this.homeScene;
     this.goGameScene.homeScene = this.homeScene;
+    this.boardSelectScene.homeScene = this.homeScene;
+    this.boardSelectScene.cardSelectScene = this.cardSelectScene;
+    this.cardSelectScene.boardSelectScene = this.boardSelectScene;
 
     this.sceneManager.switchTo(this.homeScene);
 
