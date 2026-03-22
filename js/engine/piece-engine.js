@@ -1,5 +1,5 @@
-function createPiece(color, type = 'normal', dir = null, id = null) {
-  return { id, color, type, dir };
+function createPiece(color, type = 'normal', dir = null, id = null, extra = null) {
+  return { id, color, type, dir, ...(extra || {}) };
 }
 
 function getPieceDef(pieceMap, type) {
@@ -47,7 +47,10 @@ function handleMoveForward(scene, row, col, piece, pieceDef) {
   }
 
   if (pieceDef.behavior.killOccupant && scene.isPiece(scene.board[nr][nc])) {
-    scene.board[nr][nc] = null;
+    scene.resolvePieceRemovalAt(nr, nc, {
+      reason: 'special',
+      allowRebirth: true
+    });
   }
 
   scene.board[nr][nc] = createPiece(piece.color, piece.type, piece.dir, piece.id);
@@ -77,16 +80,26 @@ function handleBlastArea(scene, row, col, piece, pieceDef) {
 
   const offsets = getOffsetsByDir(rule.offsetsByDir, piece.dir);
   const area = getAreaByOffsets(scene, row, col, offsets);
+  const destroyArea = rule.destroyCells
+    ? (rule.destroyOnlySelfCell ? [[row, col]] : area)
+    : [];
+  const destroyKeys = new Set(destroyArea.map(([r, c]) => `${r},${c}`));
 
   const exploded = [];
   let destroyedCellsCount = 0;
+  const blockedRebirthKeys = new Set(area.map(([r, c]) => `${r},${c}`));
 
   for (const [r, c] of area) {
     if (scene.isPiece(scene.board[r][c])) {
       exploded.push([r, c]);
+      scene.resolvePieceRemovalAt(r, c, {
+        reason: 'special',
+        allowRebirth: true,
+        blockedRebirthKeys
+      });
     }
 
-    if (rule.destroyCells) {
+    if (destroyKeys.has(`${r},${c}`)) {
       if (scene.board[r][c] !== scene.DESTROYED) {
         destroyedCellsCount++;
       }

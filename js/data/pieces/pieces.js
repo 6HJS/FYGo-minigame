@@ -25,6 +25,43 @@ module.exports = {
         killOccupant: true
       }
     },
+
+
+    {
+      id: 'fog',
+      name: '迷雾',
+      symbol: '🌫',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#2f3640',
+      advanceOrder: 7,
+      behavior: { type: 'none' }
+    },
+
+    {
+      id: 'rebirth',
+      name: '重生',
+      symbol: '🌱',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#2e8b57',
+      advanceOrder: 8,
+      behavior: { type: 'none' }
+    },
+
+    {
+      id: 'persuader',
+      name: '说客',
+      symbol: '📢',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#16a085',
+      advanceOrder: 9,
+      behavior: { type: 'none' }
+    },
     {
       id: 'contract',
       name: '契约',
@@ -50,6 +87,7 @@ module.exports = {
         disableIfEnemyAdjacent: true,
         degradeTo: 'normal',
         destroyCells: true,
+        destroyOnlySelfCell: true,
         offsetsByDir: {
           U: [[0,-1],[0,0],[0,1],[-1,-1],[-1,0],[-1,1]],
           D: [[0,-1],[0,0],[0,1],[1,-1],[1,0],[1,1]],
@@ -57,6 +95,31 @@ module.exports = {
           R: [[-1,0],[0,0],[1,0],[-1,1],[0,1],[1,1]]
         }
       }
+    },
+
+    {
+      id: 'reverse',
+      name: '逆转',
+      symbol: '🔄',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#d35400',
+      advanceOrder: 11,
+      behavior: { type: 'none' }
+    },
+
+
+    {
+      id: 'repulsion',
+      name: '斥力',
+      symbol: '⤡',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#1f6feb',
+      advanceOrder: 12,
+      behavior: { type: 'none' }
     },
     {
       id: 'gravity',

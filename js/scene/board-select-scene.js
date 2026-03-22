@@ -4,6 +4,26 @@ const square9 = require('../data/boards/square9.js');
 const heart = require('../data/boards/heart.js');
 const dumbbell = require('../data/boards/dumbbell.js');
 const poll = require('../data/boards/poll.js');
+const diamond = require('../data/boards/diamond.js');
+const cross = require('../data/boards/cross.js');
+const butterfly = require('../data/boards/butterfly.js');
+const hourglass = require('../data/boards/hourglass.js');
+const ring = require('../data/boards/ring.js');
+const arrow = require('../data/boards/arrow.js');
+const clover = require('../data/boards/clover.js');
+const crown = require('../data/boards/crown.js');
+const crescent = require('../data/boards/crescent.js');
+const star = require('../data/boards/star.js');
+const temple = require('../data/boards/temple.js');
+const doublemoon = require('../data/boards/doublemoon.js');
+const trident = require('../data/boards/trident.js');
+const fan = require('../data/boards/fan.js');
+const gear = require('../data/boards/gear.js');
+const lantern = require('../data/boards/lantern.js');
+const bridge = require('../data/boards/bridge.js');
+const snowflake = require('../data/boards/snowflake.js');
+const anchor = require('../data/boards/anchor.js');
+const iris = require('../data/boards/iris.js');
 
 const ctx = canvas.getContext('2d');
 const windowInfo = wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync();
@@ -18,7 +38,7 @@ export default class BoardSelectScene {
     this.cardSelectScene = null;
     this.bgm = 'audio/bgm_title.mp3';
 
-    this.boards = [square9, heart, dumbbell, poll];
+    this.boards = [square9, heart, dumbbell, poll, diamond, cross, butterfly, hourglass, ring, arrow, clover, crown, crescent, star, temple, doublemoon, trident, fan, gear, lantern, bridge, snowflake, anchor, iris];
     this.currentIndex = 0;
 
     this.initLayout();

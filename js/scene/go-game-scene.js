@@ -39,7 +39,7 @@ export default class GoGameScene {
     this.pieceMap = pieceMap;
 
     this.maxCardSlots = 3;
-    this.enabledCardTypes = ['contract', 'bomber', 'gravity'];
+    this.enabledCardTypes = ['contract', 'bomber', 'reverse'];
     this.contractDuration = 3;
     this.bgm = "audio/bgm_fight.mp3"
 
@@ -181,6 +181,8 @@ export default class GoGameScene {
     this.nextPieceId = 1;
     this.contractLinks = [];
     this.pendingContractPlacement = null;
+    this.pendingRebirthPlacement = null;
+    this.fogState = null;
 
     this.calcBoardLayout();
   }
@@ -307,15 +309,152 @@ export default class GoGameScene {
     return null;
   }
 
-  removePieceById(pieceId) {
+  removePieceById(pieceId, options = {}) {
     const found = this.findPiecePositionById(pieceId);
     if (!found) return false;
-    this.board[found.row][found.col] = EMPTY;
+    this.resolvePieceRemovalAt(found.row, found.col, options);
     return true;
+  }
+
+  resolvePieceRemovalAt(row, col, options = {}) {
+    const cell = this.board[row][col];
+    if (!this.isPiece(cell)) {
+      return { removed: false, counted: false, reborn: false };
+    }
+
+    const allowRebirth = options.allowRebirth !== false;
+    const blockedRebirthKeys = options.blockedRebirthKeys || null;
+    const target = allowRebirth && cell.rebirthReady ? cell.rebirthTarget : null;
+
+    this.board[row][col] = EMPTY;
+
+    if (
+      cell.type === 'rebirth' &&
+      target &&
+      this.isPlayablePoint(target.row, target.col) &&
+      this.board[target.row][target.col] === EMPTY &&
+      (!blockedRebirthKeys || !blockedRebirthKeys.has(`${target.row},${target.col}`))
+    ) {
+      this.board[target.row][target.col] = createPiece(
+        cell.color,
+        'normal',
+        null,
+        cell.id
+      );
+      return {
+        removed: true,
+        counted: false,
+        reborn: true,
+        target: { row: target.row, col: target.col }
+      };
+    }
+
+    return { removed: true, counted: true, reborn: false };
   }
 
   clearPendingContractPlacement() {
     this.pendingContractPlacement = null;
+  }
+
+  clearPendingRebirthPlacement() {
+    this.pendingRebirthPlacement = null;
+  }
+
+  cancelPendingRebirthPlacement() {
+    const pending = this.pendingRebirthPlacement;
+    if (!pending) return false;
+
+    this.removePieceById(pending.pieceId);
+    this.refundCard('rebirth');
+    this.clearPendingRebirthPlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.previousBoardKey = this.getBoardKey(this.board);
+    this.lastMove = null;
+    this.lastCaptured = [];
+    this.statusMessage = '已取消重生落子';
+    return true;
+  }
+
+  bindPendingRebirthToTarget(row, col) {
+    const pending = this.pendingRebirthPlacement;
+    if (!pending) return false;
+
+    if (!this.isPlayablePoint(row, col)) {
+      this.statusMessage = '请选择一个可重生的位置';
+      return false;
+    }
+
+    if (this.board[row][col] !== EMPTY) {
+      this.statusMessage = '重生点必须为空位';
+      return false;
+    }
+
+    const found = this.findPiecePositionById(pending.pieceId);
+    if (!found) {
+      this.clearPendingRebirthPlacement();
+      this.statusMessage = '重生子已不存在';
+      return false;
+    }
+
+    this.board[found.row][found.col] = createPiece(
+      found.cell.color,
+      found.cell.type,
+      found.cell.dir,
+      found.cell.id,
+      {
+        rebirthTarget: { row, col },
+        rebirthReady: true
+      }
+    );
+
+    this.clearPendingRebirthPlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.currentPlayer = this.getOpponent(this.currentPlayer);
+    this.previousBoardKey = this.getBoardKey(this.board);
+    if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
+      this.clearFog();
+    }
+    this.statusMessage = `重生点已绑定：(${row + 1}, ${col + 1})`;
+    return true;
+  }
+
+  activateFog(row, col, ownerColor) {
+    this.fogState = {
+      row,
+      col,
+      ownerColor,
+      affectedPlayer: this.getOpponent(ownerColor),
+      radius: 2,
+      active: true
+    };
+  }
+
+  clearFog() {
+    this.fogState = null;
+  }
+
+  isFogActiveForPlayer(player = this.currentPlayer) {
+    return !!(this.fogState && this.fogState.active && this.fogState.affectedPlayer === player);
+  }
+
+  isPointInsideFog(row, col) {
+    if (!this.fogState || !this.fogState.active) return false;
+    return Math.abs(row - this.fogState.row) <= this.fogState.radius && Math.abs(col - this.fogState.col) <= this.fogState.radius;
+  }
+
+  handleFogOccupiedAttempt(row, col) {
+    if (!this.isFogActiveForPlayer(this.currentPlayer)) return false;
+    if (!this.isPointInsideFog(row, col)) return false;
+    if (!this.isPiece(this.board[row][col])) return false;
+
+    this.lastMove = { row, col };
+    this.lastCaptured = [];
+    this.statusMessage = '迷雾中误落在已有棋子上：本回合作废';
+    this.currentPlayer = this.getOpponent(this.currentPlayer);
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.previousBoardKey = this.getBoardKey(this.board);
+    this.clearFog();
+    return true;
   }
 
   bindPendingContractToTarget(row, col) {
@@ -344,6 +483,9 @@ export default class GoGameScene {
     this.clearPendingContractPlacement();
     this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
     this.currentPlayer = this.getOpponent(this.currentPlayer);
+    if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
+      this.clearFog();
+    }
     this.statusMessage = `契约已生效：${this.contractDuration}回合内同生共死`;
     return true;
   }
@@ -369,7 +511,7 @@ export default class GoGameScene {
 
         if (!contractPos || !targetPos) {
           const survivorId = contractPos ? link.contractId : link.targetId;
-          if (this.removePieceById(survivorId)) {
+          if (this.removePieceById(survivorId, { reason: 'special', allowRebirth: true })) {
             chainKillCount += 1;
           }
           changed = true;
@@ -430,6 +572,12 @@ export default class GoGameScene {
     const gravityInfo = piece.type === 'gravity'
       ? this.applyGravityEffect(row, col)
       : { movedCount: 0, vanishedCount: 0 };
+    const repulsionInfo = piece.type === 'repulsion'
+      ? this.applyRepulsionEffect(row, col)
+      : { movedCount: 0, vanishedCount: 0 };
+    const reverseInfo = piece.type === 'reverse'
+      ? this.applyReverseEffect(row, col)
+      : { flippedCount: 0, vanishedCount: 0 };
 
     this.advanceSpecialPieces({
       skipNewlyPlacedType: piece.type,
@@ -442,7 +590,13 @@ export default class GoGameScene {
       this.currentPlayer = this.getOpponent(this.currentPlayer);
     }
 
-    if (contractInfo.chainKillCount > 0) {
+    if (piece.type === 'fog') {
+      this.activateFog(row, col, piece.color);
+    }
+
+    if (piece.type === 'rebirth' && !endTurn) {
+      this.statusMessage = '请选择一个空位作为重生点';
+    } else if (contractInfo.chainKillCount > 0) {
       this.statusMessage = `契约触发，同归于尽 ${contractInfo.chainKillCount} 枚`;
     } else if (piece.type === 'gravity') {
       if (gravityInfo.movedCount > 0 || gravityInfo.vanishedCount > 0) {
@@ -450,6 +604,20 @@ export default class GoGameScene {
       } else {
         this.statusMessage = '引力触发，但没有棋子被拉动';
       }
+    } else if (piece.type === 'repulsion') {
+      if (repulsionInfo.movedCount > 0 || repulsionInfo.vanishedCount > 0) {
+        this.statusMessage = `斥力触发，推出 ${repulsionInfo.movedCount} 枚${repulsionInfo.vanishedCount > 0 ? `，消失 ${repulsionInfo.vanishedCount} 枚` : ''}`;
+      } else {
+        this.statusMessage = '斥力触发，但没有棋子被推出';
+      }
+    } else if (piece.type === 'reverse') {
+      if (reverseInfo.flippedCount > 0 || reverseInfo.vanishedCount > 0) {
+        this.statusMessage = `逆转触发，翻转 ${reverseInfo.flippedCount} 枚${reverseInfo.vanishedCount > 0 ? `，消失 ${reverseInfo.vanishedCount} 枚` : ''}`;
+      } else {
+        this.statusMessage = '逆转触发，但周围没有可翻转的棋子';
+      }
+    } else if (piece.type === 'fog') {
+      this.statusMessage = '迷雾已展开：对手下一回合视野受限';
     } else if (result.captured.length > 0) {
       this.statusMessage = `提子 ${result.captured.length} 枚`;
     } else if (pieceDef.needsDirection) {
@@ -489,6 +657,11 @@ export default class GoGameScene {
         return;
       }
 
+      if (this.pendingRebirthPlacement) {
+        this.cancelPendingRebirthPlacement();
+        return;
+      }
+
       const card = this.getCardDataBySlot(slot.index);
       if (!card || card.used) return;
 
@@ -503,6 +676,16 @@ export default class GoGameScene {
         return;
       }
       this.bindPendingContractToTarget(point.row, point.col);
+      return;
+    }
+
+    if (this.pendingRebirthPlacement) {
+      const point = this.screenToBoard(x, y);
+      if (!point) {
+        this.statusMessage = '请选择一个空位作为重生点，或点下方卡牌取消';
+        return;
+      }
+      this.bindPendingRebirthToTarget(point.row, point.col);
       return;
     }
 
@@ -523,9 +706,20 @@ export default class GoGameScene {
       return;
     }
 
+    if (this.handleFogOccupiedAttempt(point.row, point.col)) {
+      this.clearPendingSelection();
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      return;
+    }
+
     const selectedDef = getPieceDef(this.pieceMap, this.nextPieceType);
     if (this.nextPieceType === 'contract') {
       this.startContractPlacement(point.row, point.col);
+      return;
+    }
+
+    if (this.nextPieceType === 'rebirth') {
+      this.startRebirthPlacement(point.row, point.col);
       return;
     }
 
@@ -559,6 +753,11 @@ export default class GoGameScene {
     const pieceDef = getPieceDef(this.pieceMap, this.nextPieceType);
     if (type === 'contract' && this.nextPieceType === type) {
       this.statusMessage = `已选中${pieceDef.name}卡：先落下契约子，再点敌子绑定`;
+      return;
+    }
+
+    if (type === 'rebirth' && this.nextPieceType === type) {
+      this.statusMessage = `已选中${pieceDef.name}卡：先落子，再点空位绑定重生点`;
       return;
     }
 
@@ -632,6 +831,44 @@ export default class GoGameScene {
     this.statusMessage = '请选择一个对方棋子绑定契约，或点下方卡牌取消';
   }
 
+  startRebirthPlacement(row, col) {
+    if (!this.isPlayablePoint(row, col)) return;
+
+    if (!this.hasAvailableCard('rebirth')) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = '这张卡已经用掉了';
+      return;
+    }
+
+    if (this.board[row][col] !== EMPTY) {
+      this.statusMessage = '此处已有棋子';
+      return;
+    }
+
+    const piece = {
+      color: this.currentPlayer,
+      type: 'rebirth',
+      dir: null,
+      id: this.allocPieceId()
+    };
+
+    const result = this.simulatePlacePiece(this.board, row, col, piece, this.currentPlayer);
+    if (!result.ok) {
+      this.statusMessage = result.message || '落子失败';
+      return;
+    }
+
+    this.commitPlacement(row, col, piece, result, { endTurn: false, advanceContracts: true });
+    this.pendingRebirthPlacement = {
+      row,
+      col,
+      color: this.currentPlayer,
+      pieceId: piece.id
+    };
+    this.nextPieceType = 'rebirth';
+    this.statusMessage = '请选择一个空位作为重生点，或点下方卡牌取消';
+  }
+
   confirmSpecialPlacement(dir) {
     if (!this.pendingPlacement) return;
 
@@ -654,11 +891,75 @@ export default class GoGameScene {
       return false;
     }
 
+    const fogWasActiveForPlayer = this.isFogActiveForPlayer(this.currentPlayer);
     const ok = this.commitPlacement(row, col, finalPiece, result);
     if (ok && finalPiece.type !== 'contract') {
       this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
     }
+    if (ok && fogWasActiveForPlayer) {
+      this.clearFog();
+    }
     return ok;
+  }
+
+  applyRepulsionEffect(centerRow, centerCol) {
+    const dirs = [
+      { dr: -1, dc: 0 },
+      { dr: 1, dc: 0 },
+      { dr: 0, dc: -1 },
+      { dr: 0, dc: 1 }
+    ];
+
+    let movedCount = 0;
+
+    for (const { dr, dc } of dirs) {
+      let row = centerRow + dr;
+      let col = centerCol + dc;
+
+      while (this.isPlayablePoint(row, col)) {
+        const cell = this.board[row][col];
+        if (this.isPiece(cell)) {
+          const targetRow = row + dr;
+          const targetCol = col + dc;
+          if (this.isPlayablePoint(targetRow, targetCol) && this.board[targetRow][targetCol] === EMPTY) {
+            this.board[targetRow][targetCol] = cell;
+            this.board[row][col] = EMPTY;
+            movedCount += 1;
+          }
+          break;
+        }
+        row += dr;
+        col += dc;
+      }
+    }
+
+    const vanishedCount = this.resolveDeadGroupsAfterGravity();
+    this.previousBoardKey = this.getBoardKey(this.board);
+    return { movedCount, vanishedCount };
+  }
+
+  applyReverseEffect(centerRow, centerCol) {
+    let flippedCount = 0;
+
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        if (dr === 0 && dc === 0) continue;
+
+        const row = centerRow + dr;
+        const col = centerCol + dc;
+        if (!this.isPlayablePoint(row, col)) continue;
+
+        const cell = this.board[row][col];
+        if (!this.isPiece(cell)) continue;
+
+        cell.color = this.getOpponent(cell.color);
+        flippedCount += 1;
+      }
+    }
+
+    const vanishedCount = this.resolveDeadGroupsAfterGravity();
+    this.previousBoardKey = this.getBoardKey(this.board);
+    return { flippedCount, vanishedCount };
   }
 
 
@@ -732,7 +1033,10 @@ export default class GoGameScene {
         const key = `${row},${col}`;
         if (unique.has(key)) continue;
         unique.add(key);
-        this.board[row][col] = EMPTY;
+        this.resolvePieceRemovalAt(row, col, {
+          reason: 'capture',
+          allowRebirth: true
+        });
         vanishedCount += 1;
       }
     }
@@ -809,6 +1113,7 @@ export default class GoGameScene {
     nextBoard[row][col] = createPiece(piece.color, piece.type, piece.dir, piece.id || this.allocPieceId());
 
     let totalCaptured = [];
+    let scoreCaptured = [];
     const neighbors = this.getNeighborsForBoard(nextBoard, row, col);
     const visitedEnemyGroups = new Set();
 
@@ -823,10 +1128,12 @@ export default class GoGameScene {
       for (const [gr, gc] of group) visitedEnemyGroups.add(`${gr},${gc}`);
 
       const liberties = this.getLiberties(nextBoard, group);
-      if (liberties.size === 0) totalCaptured = totalCaptured.concat(group);
+      if (liberties.size === 0) {
+        const processed = this.processCapturedGroup(nextBoard, group);
+        totalCaptured = totalCaptured.concat(processed.removed);
+        scoreCaptured = scoreCaptured.concat(processed.counted);
+      }
     }
-
-    if (totalCaptured.length > 0) this.removeGroup(nextBoard, totalCaptured);
 
     const selfGroup = this.getGroup(nextBoard, row, col);
     const selfLiberties = this.getLiberties(nextBoard, selfGroup);
@@ -841,8 +1148,39 @@ export default class GoGameScene {
       ok: true,
       board: nextBoard,
       captured: totalCaptured,
+      scoreCaptured,
+      reborn: totalCaptured.length - scoreCaptured.length,
       beforeBoardKey
     };
+  }
+
+  processCapturedGroup(board, group) {
+    const removed = [];
+    const counted = [];
+
+    const originalBoard = this.board;
+    this.board = board;
+
+    try {
+      for (const [row, col] of group) {
+        const cell = board[row][col];
+        if (!this.isPiece(cell)) continue;
+
+        removed.push([row, col]);
+        const out = this.resolvePieceRemovalAt(row, col, {
+          reason: 'capture',
+          allowRebirth: true
+        });
+
+        if (out.counted) {
+          counted.push([row, col]);
+        }
+      }
+    } finally {
+      this.board = originalBoard;
+    }
+
+    return { removed, counted };
   }
 
   hasEnemyAdjacent(row, col, color) {
@@ -1023,7 +1361,9 @@ export default class GoGameScene {
     this.drawTopBar();
     this.drawBoard();
     this.drawPieces();
+    this.drawRebirthTargets();
     this.drawContracts();
+    this.drawFogOverlay();
     this.drawPendingPlacement();
     this.drawBottomUI();
   }
@@ -1142,6 +1482,66 @@ export default class GoGameScene {
         if (!this.isPiece(cell)) continue;
         const { x, y } = this.boardToScreen(row, col);
         this.drawOnePiece(x, y, cell, row, col);
+      }
+    }
+  }
+
+  drawRebirthTargets() {
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = this.board[row][col];
+        if (!this.isPiece(cell) || !cell.rebirthReady || !cell.rebirthTarget) continue;
+
+        const from = this.boardToScreen(row, col);
+        const to = this.boardToScreen(cell.rebirthTarget.row, cell.rebirthTarget.col);
+
+        ctx.save();
+        ctx.strokeStyle = 'rgba(46, 139, 87, 0.75)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 5]);
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.beginPath();
+        ctx.arc(to.x, to.y, Math.max(6, this.cellSize * 0.18), 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(46, 139, 87, 0.95)';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        ctx.fillStyle = '#2e8b57';
+        ctx.font = `${Math.max(10, this.cellSize * 0.3)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('🌱', to.x, to.y + 1);
+        ctx.restore();
+      }
+    }
+  }
+
+  drawFogOverlay() {
+    if (!this.isFogActiveForPlayer(this.currentPlayer)) return;
+    if (!this.fogState) return;
+  
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        if (!this.isPointInsideFog(row, col)) continue;
+        if (!this.isBoardShapeCell(row, col)) continue;
+  
+        const { x, y } = this.boardToScreen(row, col);
+        const size = this.cellSize * 0.96;
+  
+        ctx.save();
+        ctx.fillStyle = '#111';
+        ctx.fillRect(x - size / 2, y - size / 2, size, size);
+  
+        ctx.fillStyle = '#bbb';
+        ctx.font = `${Math.max(12, this.cellSize * 0.34)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.restore();
       }
     }
   }
