@@ -7,6 +7,7 @@ import TutorialScene from './scene/tutorial-scene';
 import GoGameScene from './scene/go-game-scene';
 import BoardSelectScene from './scene/board-select-scene';
 import CardSelectScene from './scene/card-select-scene';
+import VictorySelectScene from './scene/victory-select-scene';
 
 GameGlobal.musicManager = new Music();
 
@@ -19,6 +20,7 @@ export default class Main {
     this.goGameScene = new GoGameScene(this.sceneManager);
     this.boardSelectScene = new BoardSelectScene(this.sceneManager, this.goGameScene);
     this.cardSelectScene = new CardSelectScene(this.sceneManager, this.goGameScene);
+    this.victorySelectScene = new VictorySelectScene(this.sceneManager, this.goGameScene);
     this.tutorialScene = new TutorialScene(
       this.sceneManager,
       null,
@@ -34,8 +36,12 @@ export default class Main {
     this.tutorialScene.homeScene = this.homeScene;
     this.goGameScene.homeScene = this.homeScene;
     this.boardSelectScene.homeScene = this.homeScene;
-    this.boardSelectScene.cardSelectScene = this.cardSelectScene;
+    this.boardSelectScene.victorySelectScene = this.victorySelectScene;
+    this.victorySelectScene.homeScene = this.homeScene;
+    this.victorySelectScene.boardSelectScene = this.boardSelectScene;
+    this.victorySelectScene.cardSelectScene = this.cardSelectScene;
     this.cardSelectScene.boardSelectScene = this.boardSelectScene;
+    this.cardSelectScene.victorySelectScene = this.victorySelectScene;
 
     this.sceneManager.switchTo(this.homeScene);
 

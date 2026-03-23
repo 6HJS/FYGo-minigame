@@ -12,6 +12,7 @@ export default class CardSelectScene {
     this.sceneManager = sceneManager;
     this.goGameScene = goGameScene;
     this.boardSelectScene = null;
+    this.victorySelectScene = null;
     this.bgm = 'audio/bgm_title.mp3';
 
     this.pieceConfig = pieceConfig;
@@ -20,6 +21,7 @@ export default class CardSelectScene {
     this.pool = (pieceConfig.pieces || []).filter((piece) => piece.selectable && piece.id !== 'normal');
     this.selectedTypes = [];
     this.selectedBoard = null;
+    this.victoryCondition = { type: 'capture', captureTarget: 5 };
 
     this.scrollY = 0;
     this.maxScrollY = 0;
@@ -42,7 +44,7 @@ export default class CardSelectScene {
     this.backBtn = { x: 24, y: capsuleBottom + 12, w: 100, h: 40 };
     this.titleY = this.backBtn.y + 60;
 
-    this.slotAreaY = this.titleY + 80;
+    this.slotAreaY = this.titleY + 104;
     this.slotW = 96;
     this.slotH = 118;
     this.slotGap = 14;
@@ -98,6 +100,13 @@ export default class CardSelectScene {
     this.selectedBoard = board;
   }
 
+  setVictoryCondition(condition) {
+    this.victoryCondition = {
+      type: 'capture',
+      captureTarget: Number((condition && condition.captureTarget) || 0)
+    };
+  }
+
   isSelected(type) {
     return this.selectedTypes.includes(type);
   }
@@ -121,7 +130,8 @@ export default class CardSelectScene {
     const board = this.selectedBoard || (this.goGameScene && this.goGameScene.boardConfig);
     this.goGameScene.prepareMatch({
       boardConfig: board,
-      cardTypes: this.selectedTypes
+      cardTypes: this.selectedTypes,
+      victoryCondition: this.victoryCondition
     });
     this.sceneManager.switchTo(this.goGameScene);
   }
@@ -237,7 +247,8 @@ export default class CardSelectScene {
     }
 
     if (inRect(x, y, this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h)) {
-      if (this.boardSelectScene) this.sceneManager.switchTo(this.boardSelectScene);
+      if (this.victorySelectScene) this.sceneManager.switchTo(this.victorySelectScene);
+      else if (this.boardSelectScene) this.sceneManager.switchTo(this.boardSelectScene);
       return;
     }
 
@@ -307,9 +318,12 @@ export default class CardSelectScene {
     ctx.fillText('选择卡牌', SCREEN_WIDTH / 2, this.titleY);
 
     const boardText = this.selectedBoard ? `当前地图：${this.selectedBoard.name}` : '当前地图：未选择';
+    const target = Number((this.victoryCondition && this.victoryCondition.captureTarget) || 0);
+    const winText = target > 0 ? `胜利条件：先提${target}子获胜` : '胜利条件：不限提子数';
     ctx.fillStyle = '#d8d8d8';
     ctx.font = '17px Arial';
     ctx.fillText(boardText, SCREEN_WIDTH / 2, this.titleY + 32);
+    ctx.fillText(winText, SCREEN_WIDTH / 2, this.titleY + 58);
 
     ctx.fillStyle = '#d8d8d8';
     ctx.font = '16px Arial';

@@ -49,7 +49,8 @@ function handleMoveForward(scene, row, col, piece, pieceDef) {
   if (pieceDef.behavior.killOccupant && scene.isPiece(scene.board[nr][nc])) {
     scene.resolvePieceRemovalAt(nr, nc, {
       reason: 'special',
-      allowRebirth: true
+      allowRebirth: true,
+      scoreByVictimOpposition: true
     });
   }
 
@@ -95,7 +96,8 @@ function handleBlastArea(scene, row, col, piece, pieceDef) {
       scene.resolvePieceRemovalAt(r, c, {
         reason: 'special',
         allowRebirth: true,
-        blockedRebirthKeys
+        blockedRebirthKeys,
+        scoreByVictimOpposition: true
       });
     }
 

@@ -1044,11 +1044,9 @@ export default class GoGameScene {
     }
 
     const pieceId = this.allocPieceId();
-    this.board[row][col] = createPiece(this.currentPlayer, 'sacrifice', null, pieceId, {
-      sacrificePending: true
-    });
+    this.board[row][col] = createPiece(this.currentPlayer, 'sacrifice', null, pieceId);
 
-    const doomed = this.getNeighborsForBoard(this.board, row, col);
+    const doomed = [[row, col], ...this.getNeighborsForBoard(this.board, row, col)];
     for (const [r, c] of doomed) {
       this.resolvePieceRemovalAt(r, c, {
         reason: 'special',
@@ -1061,8 +1059,7 @@ export default class GoGameScene {
     this.pendingSacrificePlacement = {
       row,
       col,
-      color: this.currentPlayer,
-      pieceId
+      color: this.currentPlayer
     };
     this.nextPieceType = 'sacrifice';
     this.lastMove = { row, col };
@@ -1081,23 +1078,10 @@ export default class GoGameScene {
       return false;
     }
 
-    const source = this.findPiecePositionById(pending.pieceId);
-    if (!source || !this.isPiece(source.cell) || source.cell.color !== pending.color) {
-      this.clearPendingSacrificePlacement();
-      this.statusMessage = '献祭子已不存在';
-      return false;
-    }
-
     const out = this.resolvePieceRemovalAt(row, col, {
       reason: 'special',
       allowRebirth: true,
       scoreForColor: pending.color
-    });
-
-    this.resolvePieceRemovalAt(source.row, source.col, {
-      reason: 'special',
-      allowRebirth: false,
-      scoreForColor: null
     });
 
     this.clearPendingSacrificePlacement();
@@ -3058,18 +3042,6 @@ export default class GoGameScene {
       if (pieceDef.needsDirection) {
         this.drawDirectionMarker(x, y, r, cell.dir, cell.color);
       }
-    }
-
-    if (!isPreview && cell.sacrificePending) {
-      const alpha = 0.45 + (Math.sin(Date.now() / 180) + 1) * 0.22;
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = '#ff2d2d';
-      ctx.font = `bold ${Math.max(72, this.cellSize * 0.5)}px Arial`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('☠', x, y + 1);
-      ctx.restore();
     }
 
     if (!isPreview && this.lastMove && this.lastMove.row === row && this.lastMove.col === col) {

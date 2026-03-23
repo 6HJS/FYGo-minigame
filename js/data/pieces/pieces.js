@@ -73,6 +73,18 @@ module.exports = {
       advanceOrder: 15,
       behavior: { type: 'none' }
     },
+
+    {
+      id: 'sacrifice',
+      name: '献祭',
+      symbol: '☠',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#5d4037',
+      advanceOrder: 16,
+      behavior: { type: 'none' }
+    },
     {
       id: 'bomber',
       name: '自爆兵',

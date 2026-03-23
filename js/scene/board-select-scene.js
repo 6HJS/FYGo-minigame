@@ -1,6 +1,10 @@
 import { drawButton, inRect } from '../utils/ui';
 
 const square9 = require('../data/boards/square9.js');
+const square13 = require('../data/boards/square13.js');
+const square15 = require('../data/boards/square15.js');
+const square17 = require('../data/boards/square17.js');
+const square19 = require('../data/boards/square19.js');
 const heart = require('../data/boards/heart.js');
 const dumbbell = require('../data/boards/dumbbell.js');
 const poll = require('../data/boards/poll.js');
@@ -35,10 +39,10 @@ export default class BoardSelectScene {
     this.sceneManager = sceneManager;
     this.goGameScene = goGameScene;
     this.homeScene = null;
-    this.cardSelectScene = null;
+    this.victorySelectScene = null;
     this.bgm = 'audio/bgm_title.mp3';
 
-    this.boards = [square9, heart, dumbbell, poll, diamond, cross, butterfly, hourglass, ring, arrow, clover, crown, crescent, star, temple, doublemoon, trident, fan, gear, lantern, bridge, snowflake, anchor, iris];
+    this.boards = [square9, square13, square15, square17, square19, heart, dumbbell, poll, diamond, cross, butterfly, hourglass, ring, arrow, clover, crown, crescent, star, temple, doublemoon, trident, fan, gear, lantern, bridge, snowflake, anchor, iris];
     this.currentIndex = 0;
 
     this.initLayout();
@@ -79,9 +83,9 @@ export default class BoardSelectScene {
 
     this.confirmBtn = {
       x: 40,
-      y: SCREEN_HEIGHT - 120,
+      y: SCREEN_HEIGHT - 96,
       w: SCREEN_WIDTH - 80,
-      h: 62
+      h: 56
     };
   }
 
@@ -106,9 +110,9 @@ export default class BoardSelectScene {
     if (this.goGameScene) {
       this.goGameScene.setBoardConfig(board);
     }
-    if (this.cardSelectScene) {
-      this.cardSelectScene.setSelectedBoard(board);
-      this.sceneManager.switchTo(this.cardSelectScene);
+    if (this.victorySelectScene) {
+      this.victorySelectScene.setSelectedBoard(board);
+      this.sceneManager.switchTo(this.victorySelectScene);
     }
   }
 
@@ -137,6 +141,8 @@ export default class BoardSelectScene {
     }
   }
 
+  onTouchMove() {}
+  onTouchEnd() {}
   update() {}
 
   renderArrow(rect, symbol) {
@@ -215,7 +221,7 @@ export default class BoardSelectScene {
 
     ctx.fillStyle = '#d8d8d8';
     ctx.font = '18px Arial';
-    ctx.fillText('左右切换预览，确认后进入卡组选择', SCREEN_WIDTH / 2, this.titleY + 36);
+    ctx.fillText('左右切换预览，下一页再选择胜利条件', SCREEN_WIDTH / 2, this.titleY + 36);
 
     this.drawBoardPreview(board);
     this.renderArrow(this.leftArrowRect, '‹');
@@ -225,6 +231,6 @@ export default class BoardSelectScene {
     ctx.font = '16px Arial';
     ctx.fillText(`${this.currentIndex + 1} / ${this.boards.length}`, SCREEN_WIDTH / 2, this.previewRect.y + this.previewRect.h + 24);
 
-    drawButton(this.confirmBtn.x, this.confirmBtn.y, this.confirmBtn.w, this.confirmBtn.h, '#27ae60', '确认地图', 24);
+    drawButton(this.confirmBtn.x, this.confirmBtn.y, this.confirmBtn.w, this.confirmBtn.h, '#27ae60', '下一步', 24);
   }
 }
