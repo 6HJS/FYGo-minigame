@@ -2452,10 +2452,10 @@ export default class GoGameScene {
 
     ctx.shadowBlur = 0;
     ctx.fillStyle = '#7e22ce';
-    ctx.font = `bold ${Math.max(11, this.cellSize * 0.24)}px Arial`;
+    ctx.font = `bold ${Math.max(24, this.cellSize * 0.24)}px Arial`;
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText(String(remaining), 0, -size - 3);
+    ctx.textBaseline = 'top';
+    ctx.fillText(String(remaining), 0, -size + 20);
     ctx.restore();
   }
 
