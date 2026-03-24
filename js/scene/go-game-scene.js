@@ -52,8 +52,14 @@ export default class GoGameScene {
     this.pendingTutorialRebirthTimeout = null;
     this.victoryCondition = { type: 'capture', captureTarget: 0 };
     this.captureCounts = { black: 0, white: 0 };
+    this.komi = 6.5;
+    this.scoreRequestState = null;
+    this.scoreSummary = null;
     this.winner = null;
     this.gameOver = false;
+    this.victoryDialog = null;
+    this.scoreRequestState = null;
+    this.scoreSummary = null;
 
     this.initSafeLayout();
     this.resetGame();
@@ -71,6 +77,7 @@ export default class GoGameScene {
     this.row1Y = capsuleBottom + 12;
 
     this.backBtn = { x: 24, y: this.row1Y, w: 100, h: 40 };
+    this.scoreRequestBtn = { x: (SCREEN_WIDTH - 100) / 2, y: this.row1Y, w: 100, h: 40 };
     this.restartBtn = { x: SCREEN_WIDTH - 24 - 100, y: this.row1Y, w: 100, h: 40 };
 
     this.titleY = this.row1Y + 40 + 26;
@@ -82,6 +89,55 @@ export default class GoGameScene {
     this.boardPaddingBottom = 210;
 
     this.cardSlotsLayout = this.buildCardSlotLayout();
+    this.victoryDialog = this.buildVictoryDialogLayout();
+    this.scoreRequestDialog = this.buildScoreRequestDialogLayout();
+  }
+
+
+  buildScoreRequestDialogLayout() {
+    const w = Math.min(SCREEN_WIDTH - 56, 360);
+    const h = 228;
+    const x = (SCREEN_WIDTH - w) / 2;
+    const y = (SCREEN_HEIGHT - h) / 2 - 12;
+    const btnGap = 16;
+    const btnW = (w - 64 - btnGap) / 2;
+    return {
+      x,
+      y,
+      w,
+      h,
+      refuseBtn: {
+        x: x + 32,
+        y: y + h - 74,
+        w: btnW,
+        h: 46
+      },
+      acceptBtn: {
+        x: x + 32 + btnW + btnGap,
+        y: y + h - 74,
+        w: btnW,
+        h: 46
+      }
+    };
+  }
+
+  buildVictoryDialogLayout() {
+    const w = Math.min(SCREEN_WIDTH - 56, 360);
+    const h = 220;
+    const x = (SCREEN_WIDTH - w) / 2;
+    const y = (SCREEN_HEIGHT - h) / 2 - 12;
+    return {
+      x,
+      y,
+      w,
+      h,
+      confirmBtn: {
+        x: x + 32,
+        y: y + h - 74,
+        w: w - 64,
+        h: 46
+      }
+    };
   }
 
   buildCardSlotLayout() {
@@ -519,7 +575,262 @@ export default class GoGameScene {
     this.statusMessage = player === BLACK
       ? `黑棋先提到 ${target} 子，获胜`
       : `白棋先提到 ${target} 子，获胜`;
+    this.openVictoryDialog();
     return true;
+  }
+
+  getColorName(color) {
+    return color === BLACK ? '黑棋' : '白棋';
+  }
+
+  requestScoreCount() {
+    if (this.gameOver) return;
+    if (this.isTutorialMode) {
+      this.statusMessage = '教学关卡暂不支持申请点目';
+      return;
+    }
+    if (this.scoreRequestState) {
+      this.statusMessage = '已有点目申请等待回应';
+      return;
+    }
+
+    const requester = this.currentPlayer;
+    const responder = this.getOpponent(requester);
+    this.scoreRequestState = {
+      requester,
+      responder,
+      dialogVisible: true
+    };
+    this.currentPlayer = responder;
+    this.statusMessage = `${this.getColorName(requester)}申请点目，等待${this.getColorName(responder)}决定`;
+    this.clearPendingSelection();
+    this.clearPendingConfirmPlacement();
+    this.clearPendingContractPlacement();
+    this.clearPendingSacrificePlacement();
+    this.clearPendingRebirthPlacement();
+    this.clearPendingPersuaderPlacement();
+    this.pendingFogPlacement = null;
+  }
+
+  refuseScoreRequest() {
+    if (!this.scoreRequestState) return;
+    const responder = this.scoreRequestState.responder;
+    this.scoreRequestState = null;
+    this.statusMessage = `${this.getColorName(responder)}拒绝点目，对局继续`;
+  }
+
+  acceptScoreRequest() {
+    if (!this.scoreRequestState) return;
+    const summary = this.calculateTerritoryScore();
+    this.scoreSummary = summary;
+    this.scoreRequestState = null;
+    this.gameOver = true;
+    this.winner = summary.blackScore > summary.whiteScore ? BLACK : WHITE;
+    this.statusMessage = `点目结束：黑 ${summary.blackScore} 目，白 ${summary.whiteScore} 目`;
+    this.openVictoryDialog();
+  }
+
+  calculateTerritoryScore() {
+    const visited = new Set();
+    let blackTerritory = 0;
+    let whiteTerritory = 0;
+    let neutralTerritory = 0;
+    const regionLogs = [];
+
+    this.debugLogBoardForScoring();
+
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        if (!this.isBoardShapeCell(row, col)) continue;
+        if (this.board[row][col] !== EMPTY) continue;
+
+        const key = `${row},${col}`;
+        if (visited.has(key)) continue;
+
+        const info = this.collectEmptyRegion(row, col, visited);
+        let owner = 'neutral';
+        if (!info.touchesOutside && info.borderColors.size === 1) {
+          if (info.borderColors.has(BLACK)) {
+            blackTerritory += info.points.length;
+            owner = 'black';
+          } else if (info.borderColors.has(WHITE)) {
+            whiteTerritory += info.points.length;
+            owner = 'white';
+          } else {
+            neutralTerritory += info.points.length;
+          }
+        } else {
+          neutralTerritory += info.points.length;
+        }
+
+        regionLogs.push({
+          start: `${row},${col}`,
+          size: info.points.length,
+          owner,
+          borderColors: this.debugFormatBorderColors(info.borderColors),
+          touchesOutside: info.touchesOutside,
+          points: info.points.map(([r, c]) => `(${r},${c})`).join(' ')
+        });
+      }
+    }
+
+    const blackCaptures = this.captureCounts.black || 0;
+    const whiteCaptures = this.captureCounts.white || 0;
+    const blackScore = blackTerritory + blackCaptures;
+    const whiteScore = whiteTerritory + whiteCaptures + this.komi;
+
+    const summary = {
+      blackTerritory,
+      whiteTerritory,
+      neutralTerritory,
+      blackCaptures,
+      whiteCaptures,
+      komi: this.komi,
+      blackScore,
+      whiteScore,
+      winner: blackScore > whiteScore ? BLACK : WHITE,
+      margin: Math.abs(blackScore - whiteScore)
+    };
+
+    this.debugLogScoreDetails(regionLogs, summary);
+    return summary;
+  }
+
+  debugLogBoardForScoring() {
+    try {
+      const rows = [];
+      for (let row = 0; row < BOARD_ROWS; row++) {
+        const cells = [];
+        for (let col = 0; col < BOARD_COLS; col++) {
+          cells.push(this.debugGetBoardCellSymbol(row, col));
+        }
+        rows.push(`${String(row).padStart(2, '0')}: ${cells.join(' ')}`);
+      }
+      console.log('[点目] 当前棋盘：\n' + rows.join('\n'));
+    } catch (err) {
+      console.log('[点目] 当前棋盘输出失败', err);
+    }
+  }
+
+  debugGetBoardCellSymbol(row, col) {
+    if (!this.isBoardShapeCell(row, col)) return '  ';
+    const cell = this.board[row][col];
+    if (cell === EMPTY) return '·';
+    if (cell === DESTROYED) return 'X';
+    if (!this.isPiece(cell)) return '?';
+
+    const color = cell.color === BLACK ? 'B' : 'W';
+    const type = cell.type && cell.type !== 'normal' ? `:${cell.type}` : '';
+    return `${color}${type}`;
+  }
+
+  debugFormatBorderColors(borderColors) {
+    return Array.from(borderColors).map((color) => {
+      if (color === BLACK) return 'black';
+      if (color === WHITE) return 'white';
+      return String(color);
+    }).join('|') || 'none';
+  }
+
+  debugLogScoreDetails(regionLogs, summary) {
+    try {
+      console.log('[点目] 空地连通区域明细开始');
+      regionLogs.forEach((item, index) => {
+        console.log(`[点目] 区域${index + 1} 起点=${item.start} 大小=${item.size} 归属=${item.owner} 边界=${item.borderColors} touchesOutside=${item.touchesOutside} 点=${item.points}`);
+      });
+      console.log('[点目] 结果汇总', {
+        blackTerritory: summary.blackTerritory,
+        whiteTerritory: summary.whiteTerritory,
+        neutralTerritory: summary.neutralTerritory,
+        blackCaptures: summary.blackCaptures,
+        whiteCaptures: summary.whiteCaptures,
+        komi: summary.komi,
+        blackScore: summary.blackScore,
+        whiteScore: summary.whiteScore,
+        winner: summary.winner === BLACK ? 'black' : 'white',
+        margin: summary.margin
+      });
+    } catch (err) {
+      console.log('[点目] 结果输出失败', err);
+    }
+  }
+
+  collectEmptyRegion(startRow, startCol, visited) {
+    const stack = [[startRow, startCol]];
+    const points = [];
+    const borderColors = new Set();
+    let touchesOutside = false;
+
+    while (stack.length) {
+      const [row, col] = stack.pop();
+      const key = `${row},${col}`;
+      if (visited.has(key)) continue;
+      visited.add(key);
+
+      if (!this.isBoardShapeCell(row, col)) {
+        touchesOutside = true;
+        continue;
+      }
+
+      const cell = this.board[row][col];
+      if (cell !== EMPTY) continue;
+      points.push([row, col]);
+
+      for (const dir of Object.values(DIRS)) {
+        const nr = row + dir.dr;
+        const nc = col + dir.dc;
+
+        if (!this.isBoardShapeCell(nr, nc)) {
+          touchesOutside = true;
+          continue;
+        }
+
+        const nextCell = this.board[nr][nc];
+        if (nextCell === EMPTY) {
+          const nextKey = `${nr},${nc}`;
+          if (!visited.has(nextKey)) stack.push([nr, nc]);
+        } else if (this.isPiece(nextCell)) {
+          borderColors.add(nextCell.color);
+        } else {
+          touchesOutside = true;
+        }
+      }
+    }
+
+    return { points, borderColors, touchesOutside };
+  }
+
+  openVictoryDialog() {
+    if (this.isTutorialMode || !this.gameOver) return;
+
+    const winnerText = this.winner === BLACK ? '黑棋' : '白棋';
+    let detail = `${winnerText}获胜。`;
+
+    if (this.scoreSummary) {
+      const summary = this.scoreSummary;
+      const marginText = Number.isInteger(summary.margin) ? `${summary.margin}` : `${summary.margin.toFixed(1)}`;
+      detail = `黑 ${summary.blackScore} 目，白 ${summary.whiteScore} 目，${winnerText}胜 ${marginText} 目`;
+    } else {
+      const target = this.getCaptureTarget();
+      detail = target > 0
+        ? `${winnerText}率先达到提 ${target} 子的胜利条件。`
+        : `${winnerText}获胜。`;
+    }
+
+    this.victoryDialog = {
+      title: '对局结束',
+      message: `${winnerText}赢了`,
+      detail,
+      confirmText: '确认返回主界面'
+    };
+  }
+
+  closeVictoryDialogAndReturnHome() {
+    this.victoryDialog = null;
+    const targetScene = this.homeScene || this.returnScene;
+    if (targetScene) {
+      this.sceneManager.switchTo(targetScene);
+    }
   }
 
   setEnabledCardTypes(cardTypes) {
@@ -578,6 +889,7 @@ export default class GoGameScene {
     this.captureCounts = { black: 0, white: 0 };
     this.winner = null;
     this.gameOver = false;
+    this.victoryDialog = null;
 
     this.previousBoardKey = this.getBoardKey(this.board);
 
@@ -1760,10 +2072,35 @@ export default class GoGameScene {
   }
 
   handleTap(x, y) {
+    if (this.scoreRequestState && this.scoreRequestState.dialogVisible && this.scoreRequestDialog) {
+      const dialog = this.scoreRequestDialog;
+      if (inRect(x, y, dialog.refuseBtn.x, dialog.refuseBtn.y, dialog.refuseBtn.w, dialog.refuseBtn.h)) {
+        this.refuseScoreRequest();
+        return;
+      }
+      if (inRect(x, y, dialog.acceptBtn.x, dialog.acceptBtn.y, dialog.acceptBtn.w, dialog.acceptBtn.h)) {
+        this.acceptScoreRequest();
+        return;
+      }
+      return;
+    }
+
+    if (this.gameOver && this.victoryDialog) {
+      const btn = this.victoryDialog.confirmBtn || (this.victoryDialog = this.buildVictoryDialogLayout()).confirmBtn;
+      if (inRect(x, y, btn.x, btn.y, btn.w, btn.h)) {
+        this.closeVictoryDialogAndReturnHome();
+      }
+      return;
+    }
 
     if (inRect(x, y, this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h)) {
       const targetScene = this.returnScene || this.homeScene;
       if (targetScene) this.sceneManager.switchTo(targetScene);
+      return;
+    }
+
+    if (inRect(x, y, this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h)) {
+      this.requestScoreCount();
       return;
     }
 
@@ -2808,6 +3145,8 @@ export default class GoGameScene {
     this.drawPendingConfirmPlacement();
     this.drawPendingPlacement();
     this.drawBottomUI();
+    this.drawScoreRequestDialog();
+    this.drawVictoryDialog();
   }
 
   drawBackground() {
@@ -2817,6 +3156,7 @@ export default class GoGameScene {
 
   drawTopBar() {
     drawButton(this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h, '#34495e', '返回');
+    drawButton(this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h, '#f1c40f', '申请点目', 20, '#3b2a18');
     drawButton(this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h, '#27ae60', '重开');
 
     ctx.fillStyle = '#1f1f1f';
@@ -2845,6 +3185,74 @@ export default class GoGameScene {
     this.drawBoardLines();
     this.drawBoardPoints();
     this.drawDestroyedCells();
+  }
+
+  drawScoreRequestDialog() {
+    if (!this.scoreRequestState || !this.scoreRequestState.dialogVisible || !this.scoreRequestDialog) return;
+
+    const dialog = this.scoreRequestDialog;
+    const requesterText = this.getColorName(this.scoreRequestState.requester);
+    const responderText = this.getColorName(this.scoreRequestState.responder);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+    ctx.fillStyle = '#f7e8c6';
+    ctx.strokeStyle = '#6b4f2c';
+    ctx.lineWidth = 4;
+    ctx.fillRect(dialog.x, dialog.y, dialog.w, dialog.h);
+    ctx.strokeRect(dialog.x, dialog.y, dialog.w, dialog.h);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#3b2a18';
+    ctx.font = 'bold 28px Arial';
+    ctx.fillText('申请点目', dialog.x + dialog.w / 2, dialog.y + 42);
+
+    ctx.fillStyle = '#1f1f1f';
+    ctx.font = '20px Arial';
+    ctx.fillText(`${requesterText}申请点目`, dialog.x + dialog.w / 2, dialog.y + 92);
+    ctx.fillText(`${responderText}是否接受？`, dialog.x + dialog.w / 2, dialog.y + 124);
+
+    drawButton(dialog.refuseBtn.x, dialog.refuseBtn.y, dialog.refuseBtn.w, dialog.refuseBtn.h, '#95a5a6', '拒绝', 20);
+    drawButton(dialog.acceptBtn.x, dialog.acceptBtn.y, dialog.acceptBtn.w, dialog.acceptBtn.h, '#f1c40f', '接受', 20, '#3b2a18');
+    ctx.restore();
+  }
+
+  drawVictoryDialog() {
+    if (!this.gameOver || this.isTutorialMode || !this.victoryDialog) return;
+
+    const dialog = this.victoryDialog;
+    const rect = this.buildVictoryDialogLayout();
+    dialog.confirmBtn = rect.confirmBtn;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+    ctx.fillStyle = '#f7e8c6';
+    ctx.strokeStyle = '#6b4f2c';
+    ctx.lineWidth = 4;
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#3b2a18';
+    ctx.font = 'bold 28px Arial';
+    ctx.fillText(dialog.title || '对局结束', rect.x + rect.w / 2, rect.y + 42);
+
+    ctx.fillStyle = '#1f1f1f';
+    ctx.font = 'bold 34px Arial';
+    ctx.fillText(dialog.message || '', rect.x + rect.w / 2, rect.y + 92);
+
+    ctx.fillStyle = '#6b4f2c';
+    ctx.font = '18px Arial';
+    ctx.fillText(dialog.detail || '', rect.x + rect.w / 2, rect.y + 132);
+
+    drawButton(rect.confirmBtn.x, rect.confirmBtn.y, rect.confirmBtn.w, rect.confirmBtn.h, '#27ae60', dialog.confirmText || '确认');
+    ctx.restore();
   }
 
   drawBoardBackground() {
