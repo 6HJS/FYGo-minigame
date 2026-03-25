@@ -28,6 +28,7 @@ const bridge = require('../data/boards/bridge.js');
 const snowflake = require('../data/boards/snowflake.js');
 const anchor = require('../data/boards/anchor.js');
 const iris = require('../data/boards/iris.js');
+const worldmap = require('../data/boards/worldmap.js');
 
 const ctx = canvas.getContext('2d');
 const windowInfo = wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync();
@@ -42,7 +43,7 @@ export default class BoardSelectScene {
     this.victorySelectScene = null;
     this.bgm = 'audio/bgm_title.mp3';
 
-    this.boards = [square9, square13, square15, square17, square19, heart, dumbbell, poll, diamond, cross, butterfly, hourglass, ring, arrow, clover, crown, crescent, star, temple, doublemoon, trident, fan, gear, lantern, bridge, snowflake, anchor, iris];
+    this.boards = [square9, square13, square15, square17, square19, heart, dumbbell, poll, diamond, cross, butterfly, hourglass, ring, arrow, clover, crown, crescent, star, temple, doublemoon, trident, fan, gear, lantern, bridge, snowflake, anchor, iris, worldmap];
     this.currentIndex = 0;
 
     this.initLayout();

@@ -654,6 +654,35 @@ export default class GoGameScene {
     return Math.max(min, Math.min(max, value));
   }
 
+  getBoardScaleLimits() {
+    const totalPlayable = this.boardConfig && Array.isArray(this.boardConfig.shape)
+      ? this.boardConfig.shape.reduce((sum, row) => sum + row.reduce((rSum, cell) => rSum + (cell === 1 ? 1 : 0), 0), 0)
+      : 0;
+
+    const spanCols = Math.max(1, this.maxCol - this.minCol);
+    const spanRows = Math.max(1, this.maxRow - this.minRow);
+    const maxSpan = Math.max(spanCols, spanRows);
+
+    let minScale = 1;
+    let maxScale = 2.8;
+
+    if (totalPlayable >= 4500 || maxSpan >= 120) {
+      maxScale = 18;
+      minScale = 0.35;
+    } else if (totalPlayable >= 2500 || maxSpan >= 90) {
+      maxScale = 14;
+      minScale = 0.45;
+    } else if (totalPlayable >= 1200 || maxSpan >= 60) {
+      maxScale = 10;
+      minScale = 0.6;
+    } else if (totalPlayable >= 500 || maxSpan >= 35) {
+      maxScale = 7;
+      minScale = 0.8;
+    }
+
+    return { minScale, maxScale };
+  }
+
   getBoardViewportRect() {
     return {
       left: this.boardPaddingSide,
@@ -705,7 +734,8 @@ export default class GoGameScene {
   }
 
   applyBoardViewTransform() {
-    const scale = this.clamp(this.boardScale || 1, 1, 2.8);
+    const { minScale, maxScale } = this.getBoardScaleLimits();
+    const scale = this.clamp(this.boardScale || 1, minScale, maxScale);
     const clamped = this.clampBoardOffset(this.boardOffsetX || 0, this.boardOffsetY || 0, scale);
 
     this.boardScale = scale;
@@ -759,7 +789,8 @@ export default class GoGameScene {
     if (!info) return false;
 
     const g = this.activeGesture;
-    const newScale = this.clamp(g.startScale * (info.distance / g.startDistance), 1, 2.8);
+    const { minScale, maxScale } = this.getBoardScaleLimits();
+    const newScale = this.clamp(g.startScale * (info.distance / g.startDistance), minScale, maxScale);
     const anchorBoardX = (g.startCenterX - this.baseOriginX - g.startOffsetX) / (this.baseCellSize * g.startScale);
     const anchorBoardY = (g.startCenterY - this.baseOriginY - g.startOffsetY) / (this.baseCellSize * g.startScale);
 
@@ -2729,12 +2760,15 @@ export default class GoGameScene {
   }
 
   screenToBoard(x, y) {
+    const approxCol = Math.round((x - this.originX) / this.cellSize);
+    const approxRow = Math.round((y - this.originY) / this.cellSize);
+
     let nearest = null;
     let minDist = Infinity;
-    const threshold = this.cellSize * 0.45;
+    const threshold = Math.max(12, this.cellSize * 0.6);
 
-    for (let row = 0; row < BOARD_ROWS; row++) {
-      for (let col = 0; col < BOARD_COLS; col++) {
+    for (let row = approxRow - 2; row <= approxRow + 2; row++) {
+      for (let col = approxCol - 2; col <= approxCol + 2; col++) {
         if (!this.isPlayablePoint(row, col)) continue;
 
         const pos = this.boardToScreen(row, col);
@@ -2745,6 +2779,24 @@ export default class GoGameScene {
         if (dist < minDist) {
           minDist = dist;
           nearest = { row, col };
+        }
+      }
+    }
+
+    if (!nearest) {
+      for (let row = 0; row < BOARD_ROWS; row++) {
+        for (let col = 0; col < BOARD_COLS; col++) {
+          if (!this.isPlayablePoint(row, col)) continue;
+
+          const pos = this.boardToScreen(row, col);
+          const dx = x - pos.x;
+          const dy = y - pos.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          if (dist < minDist) {
+            minDist = dist;
+            nearest = { row, col };
+          }
         }
       }
     }

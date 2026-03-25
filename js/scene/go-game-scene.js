@@ -39,7 +39,8 @@ export default class GoGameScene {
     this.pieceMap = pieceMap;
 
     this.maxCardSlots = 3;
-    this.enabledCardTypes = ['contract', 'bomber', 'reverse'];
+    this.blackEnabledCardTypes = ['contract', 'bomber', 'reverse'];
+    this.whiteEnabledCardTypes = ['contract', 'bomber', 'reverse'];
     this.contractDuration = 3;
     this.bgm = "audio/bgm_fight.mp3"
 
@@ -80,11 +81,18 @@ export default class GoGameScene {
     this.scoreRequestBtn = { x: (SCREEN_WIDTH - 100) / 2, y: this.row1Y, w: 100, h: 40 };
     this.restartBtn = { x: SCREEN_WIDTH - 24 - 100, y: this.row1Y, w: 100, h: 40 };
 
-    this.titleY = this.row1Y + 40 + 26;
-    this.turnTextY = this.titleY + 42;
-    this.msgTextY = this.turnTextY + 54;
+    this.previewRowY = this.row1Y + 52;
+    this.previewRowH = 46;
+    this.previewInfoGap = 8;
+    this.previewInfoLineH = 16;
+    this.previewExtraInfoH = this.previewInfoGap + this.previewInfoLineH * 2 + 4;
 
-    this.boardPaddingTop = this.msgTextY + 35;
+    this.titleY = this.previewRowY + this.previewRowH + this.previewExtraInfoH + 14;
+    this.turnTextY = this.titleY;
+    this.timerTextY = this.titleY;
+    this.msgTextY = this.titleY + 30;
+
+    this.boardPaddingTop = this.msgTextY + 34;
     this.boardPaddingSide = 36;
     this.boardPaddingBottom = 210;
 
@@ -163,11 +171,36 @@ export default class GoGameScene {
     return list;
   }
 
-  createInitialCardLoadout() {
+  getColorKey(color) {
+    if (color === BLACK || color === 'black') return 'black';
+    if (color === WHITE || color === 'white') return 'white';
+    return 'black';
+  }
+
+  getEnabledCardTypes(color = this.currentPlayer) {
+    const key = this.getColorKey(color);
+    const list = key === 'white' ? this.whiteEnabledCardTypes : this.blackEnabledCardTypes;
+    return Array.isArray(list) ? list : [];
+  }
+
+  setEnabledCardTypesByColor(color, cardTypes) {
+    const key = this.getColorKey(color);
+    const nextTypes = Array.isArray(cardTypes)
+      ? cardTypes
+          .filter((type) => type && type !== (this.pieceConfig.defaultPieceType || 'normal'))
+          .slice(0, this.maxCardSlots)
+      : [];
+
+    if (key === 'white') this.whiteEnabledCardTypes = nextTypes;
+    else this.blackEnabledCardTypes = nextTypes;
+  }
+
+  createInitialCardLoadout(color = this.currentPlayer) {
     const loadout = [];
+    const types = this.getEnabledCardTypes(color);
 
     for (let i = 0; i < this.maxCardSlots; i++) {
-      const type = this.getEnabledCardTypes()[i];
+      const type = types[i];
       const def = type ? getPieceDef(this.pieceMap, type) : null;
 
       if (!type || !def || def.id !== type || type === (this.pieceConfig.defaultPieceType || 'normal')) {
@@ -181,8 +214,33 @@ export default class GoGameScene {
     return loadout;
   }
 
-  getEnabledCardTypes() {
-    return Array.isArray(this.enabledCardTypes) ? this.enabledCardTypes : [];
+  syncActivePlayerCardState() {
+    if (!this.nextPieceTypeByColor) {
+      const defaultType = this.pieceConfig.defaultPieceType || 'normal';
+      this.nextPieceTypeByColor = { black: defaultType, white: defaultType };
+    }
+    if (!this.cardLoadoutByColor) {
+      this.cardLoadoutByColor = { black: this.createInitialCardLoadout('black'), white: this.createInitialCardLoadout('white') };
+    }
+
+    const key = this.getColorKey(this.currentPlayer);
+    this.cardLoadout = this.cardLoadoutByColor[key];
+    this.enabledCardTypes = this.getEnabledCardTypes(key);
+    this.nextPieceType = this.nextPieceTypeByColor[key] || (this.pieceConfig.defaultPieceType || 'normal');
+  }
+
+  cacheActivePlayerNextPieceType() {
+    if (!this.nextPieceTypeByColor) return;
+    const key = this.getColorKey(this.currentPlayer);
+    this.nextPieceTypeByColor[key] = this.nextPieceType || (this.pieceConfig.defaultPieceType || 'normal');
+  }
+
+  setCurrentPlayer(player) {
+    this.syncActiveTurnTimer();
+    this.cacheActivePlayerNextPieceType();
+    this.currentPlayer = player;
+    this.syncActivePlayerCardState();
+    this.lastTimerUpdateAt = Date.now();
   }
 
 
@@ -220,9 +278,16 @@ export default class GoGameScene {
       this.pendingTutorialRebirthTimeout = null;
     }
     this.currentPlayer = this.tutorialPlayerColor;
-    this.cardLoadout = this.makeTutorialCardLoadout(level.cards || [level.pieceType]);
-    this.enabledCardTypes = (level.cards || [level.pieceType]).slice();
-    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.syncActivePlayerCardState();
+    this.blackEnabledCardTypes = (level.cards || [level.pieceType]).slice();
+    this.whiteEnabledCardTypes = (level.cards || [level.pieceType]).slice();
+    this.cardLoadoutByColor = {
+      black: this.makeTutorialCardLoadout(level.cards || [level.pieceType]),
+      white: this.makeTutorialCardLoadout(level.cards || [level.pieceType])
+    };
+    const defaultType = this.pieceConfig.defaultPieceType || 'normal';
+    this.nextPieceTypeByColor = { black: defaultType, white: defaultType };
+    this.syncActivePlayerCardState();
     this.clearPendingSelection();
     this.clearPendingConfirmPlacement();
     this.clearPendingContractPlacement();
@@ -428,12 +493,14 @@ export default class GoGameScene {
       }
       this.statusMessage = '重生点已绑定，2 秒后白棋会在天元右侧落子并检验重生';
       this.currentPlayer = this.tutorialPlayerColor;
+    this.syncActivePlayerCardState();
       this.previousBoardKey = this.getBoardKey(this.board);
       this.pendingTutorialRebirthTimeout = setTimeout(() => {
         this.pendingTutorialRebirthTimeout = null;
         if (!this.isTutorialMode || !this.tutorialLevel || !this.tutorialLevel.autoResolveRebirthTest) return;
         this.runTutorialRebirthTest();
         this.currentPlayer = this.tutorialPlayerColor;
+    this.syncActivePlayerCardState();
         this.previousBoardKey = this.getBoardKey(this.board);
 
         if (this.checkTutorialGoal()) {
@@ -455,6 +522,7 @@ export default class GoGameScene {
     if (piece && piece.type === 'contract' && this.tutorialLevel.autoResolveContractTrigger) {
       this.statusMessage = '契约已建立，1 秒后左侧白骑兵会自动冲锋，触发同归于尽';
       this.currentPlayer = this.tutorialPlayerColor;
+    this.syncActivePlayerCardState();
       this.previousBoardKey = this.getBoardKey(this.board);
       setTimeout(() => {
         if (!this.isTutorialMode || !this.tutorialLevel || !this.tutorialLevel.autoResolveContractTrigger) return;
@@ -466,6 +534,7 @@ export default class GoGameScene {
           this.statusMessage = '白骑兵已冲锋，请检查契约是否触发';
         }
         this.currentPlayer = this.tutorialPlayerColor;
+    this.syncActivePlayerCardState();
         this.previousBoardKey = this.getBoardKey(this.board);
         if (this.checkTutorialGoal()) {
           const delayMs = Number(this.tutorialLevel.autoDelayWinMs || 0);
@@ -484,6 +553,7 @@ export default class GoGameScene {
     }
 
     this.currentPlayer = this.tutorialPlayerColor;
+    this.syncActivePlayerCardState();
     this.previousBoardKey = this.getBoardKey(this.board);
 
     if (this.checkTutorialGoal()) {
@@ -601,7 +671,7 @@ export default class GoGameScene {
       responder,
       dialogVisible: true
     };
-    this.currentPlayer = responder;
+    this.setCurrentPlayer(responder);
     this.statusMessage = `${this.getColorName(requester)}申请点目，等待${this.getColorName(responder)}决定`;
     this.clearPendingSelection();
     this.clearPendingConfirmPlacement();
@@ -833,16 +903,14 @@ export default class GoGameScene {
     }
   }
 
-  setEnabledCardTypes(cardTypes) {
-    const nextTypes = Array.isArray(cardTypes)
-      ? cardTypes
-          .filter((type) => type && type !== (this.pieceConfig.defaultPieceType || 'normal'))
-          .slice(0, this.maxCardSlots)
-      : [];
-
-    this.enabledCardTypes = nextTypes;
-    this.cardLoadout = this.createInitialCardLoadout();
-    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+  setEnabledCardTypes(cardTypes, color = 'black') {
+    this.setEnabledCardTypesByColor(color, cardTypes);
+    if (!this.cardLoadoutByColor) this.cardLoadoutByColor = { black: [], white: [] };
+    this.cardLoadoutByColor[this.getColorKey(color)] = this.createInitialCardLoadout(color);
+    const defaultType = this.pieceConfig.defaultPieceType || 'normal';
+    if (!this.nextPieceTypeByColor) this.nextPieceTypeByColor = { black: defaultType, white: defaultType };
+    this.nextPieceTypeByColor[this.getColorKey(color)] = defaultType;
+    this.syncActivePlayerCardState();
     this.clearPendingSelection();
     this.clearPendingConfirmPlacement();
     this.clearPendingContractPlacement();
@@ -862,11 +930,8 @@ export default class GoGameScene {
       BOARD_COLS = BOARD_SHAPE[0].length;
     }
 
-    if (options.cardTypes) {
-      this.enabledCardTypes = options.cardTypes
-        .filter((type) => type && type !== (this.pieceConfig.defaultPieceType || 'normal'))
-        .slice(0, this.maxCardSlots);
-    }
+    this.setEnabledCardTypesByColor('black', options.blackCardTypes || options.cardTypes || this.blackEnabledCardTypes);
+    this.setEnabledCardTypesByColor('white', options.whiteCardTypes || options.cardTypes || this.whiteEnabledCardTypes);
 
     if (options.victoryCondition) {
       this.setVictoryCondition(options.victoryCondition);
@@ -882,7 +947,7 @@ export default class GoGameScene {
       )
     );
 
-    this.currentPlayer = BLACK;
+    this.setCurrentPlayer(BLACK);
     this.lastMove = null;
     this.lastCaptured = [];
     this.statusMessage = '';
@@ -890,14 +955,24 @@ export default class GoGameScene {
     this.winner = null;
     this.gameOver = false;
     this.victoryDialog = null;
+    this.scoreRequestState = null;
+    this.scoreSummary = null;
+
+    this.initTurnTimers();
 
     this.previousBoardKey = this.getBoardKey(this.board);
 
-    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    const defaultType = this.pieceConfig.defaultPieceType || 'normal';
+    this.nextPieceTypeByColor = { black: defaultType, white: defaultType };
+    this.nextPieceType = defaultType;
     this.pendingPlacement = null;
     this.directionButtons = null;
 
-    this.cardLoadout = this.createInitialCardLoadout();
+    this.cardLoadoutByColor = {
+      black: this.createInitialCardLoadout('black'),
+      white: this.createInitialCardLoadout('white')
+    };
+    this.syncActivePlayerCardState();
     this.nextPieceId = 1;
     this.contractLinks = [];
     this.pendingContractPlacement = null;
@@ -966,6 +1041,35 @@ export default class GoGameScene {
     return Math.max(min, Math.min(max, value));
   }
 
+  getBoardScaleLimits() {
+    const totalPlayable = this.boardConfig && Array.isArray(this.boardConfig.shape)
+      ? this.boardConfig.shape.reduce((sum, row) => sum + row.reduce((rSum, cell) => rSum + (cell === 1 ? 1 : 0), 0), 0)
+      : 0;
+
+    const spanCols = Math.max(1, this.maxCol - this.minCol);
+    const spanRows = Math.max(1, this.maxRow - this.minRow);
+    const maxSpan = Math.max(spanCols, spanRows);
+
+    let minScale = 1;
+    let maxScale = 2.8;
+
+    if (totalPlayable >= 4500 || maxSpan >= 120) {
+      maxScale = 18;
+      minScale = 0.35;
+    } else if (totalPlayable >= 2500 || maxSpan >= 90) {
+      maxScale = 14;
+      minScale = 0.45;
+    } else if (totalPlayable >= 1200 || maxSpan >= 60) {
+      maxScale = 10;
+      minScale = 0.6;
+    } else if (totalPlayable >= 500 || maxSpan >= 35) {
+      maxScale = 7;
+      minScale = 0.8;
+    }
+
+    return { minScale, maxScale };
+  }
+
   getBoardViewportRect() {
     return {
       left: this.boardPaddingSide,
@@ -1017,7 +1121,8 @@ export default class GoGameScene {
   }
 
   applyBoardViewTransform() {
-    const scale = this.clamp(this.boardScale || 1, 1, 2.8);
+    const { minScale, maxScale } = this.getBoardScaleLimits();
+    const scale = this.clamp(this.boardScale || 1, minScale, maxScale);
     const clamped = this.clampBoardOffset(this.boardOffsetX || 0, this.boardOffsetY || 0, scale);
 
     this.boardScale = scale;
@@ -1071,7 +1176,8 @@ export default class GoGameScene {
     if (!info) return false;
 
     const g = this.activeGesture;
-    const newScale = this.clamp(g.startScale * (info.distance / g.startDistance), 1, 2.8);
+    const { minScale, maxScale } = this.getBoardScaleLimits();
+    const newScale = this.clamp(g.startScale * (info.distance / g.startDistance), minScale, maxScale);
     const anchorBoardX = (g.startCenterX - this.baseOriginX - g.startOffsetX) / (this.baseCellSize * g.startScale);
     const anchorBoardY = (g.startCenterY - this.baseOriginY - g.startOffsetY) / (this.baseCellSize * g.startScale);
 
@@ -1098,13 +1204,15 @@ export default class GoGameScene {
     return points;
   }
 
-  getCardDataBySlot(slotIndex) {
-    return this.cardLoadout[slotIndex] || null;
+  getCardDataBySlot(slotIndex, color = this.currentPlayer) {
+    const loadout = color === this.currentPlayer ? this.cardLoadout : (this.cardLoadoutByColor ? this.cardLoadoutByColor[this.getColorKey(color)] : null);
+    return (loadout && loadout[slotIndex]) || null;
   }
 
-  findAvailableCardSlotByType(type) {
-    for (let i = 0; i < this.cardLoadout.length; i++) {
-      const card = this.cardLoadout[i];
+  findAvailableCardSlotByType(type, color = this.currentPlayer) {
+    const loadout = color === this.currentPlayer ? this.cardLoadout : (this.cardLoadoutByColor ? this.cardLoadoutByColor[this.getColorKey(color)] : []);
+    for (let i = 0; i < loadout.length; i++) {
+      const card = loadout[i];
       if (card && card.type === type && !card.used) return i;
     }
     return -1;
@@ -1417,7 +1525,7 @@ export default class GoGameScene {
     const wonByCapture = this.checkVictoryAfterCapture(pending.color);
 
     if (!wonByCapture) {
-      this.currentPlayer = this.getOpponent(this.currentPlayer);
+      this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
     }
     this.previousBoardKey = this.getBoardKey(this.board);
 
@@ -1485,7 +1593,7 @@ export default class GoGameScene {
     const vanishedCount = this.resolveDeadGroupsAfterGravity(null, true);
     this.clearPendingPersuaderPlacement();
     this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
-    this.currentPlayer = this.getOpponent(this.currentPlayer);
+    this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
     this.previousBoardKey = this.getBoardKey(this.board);
 
     if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
@@ -1553,7 +1661,7 @@ export default class GoGameScene {
 
     this.clearPendingRebirthPlacement();
     this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
-    this.currentPlayer = this.getOpponent(this.currentPlayer);
+    this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
     this.previousBoardKey = this.getBoardKey(this.board);
     const turnStartInfo = this.resolveTurnStartSpecials(this.currentPlayer);
     if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
@@ -1598,7 +1706,7 @@ export default class GoGameScene {
     this.lastMove = { row, col };
     this.lastCaptured = [];
     this.statusMessage = '迷雾中误落在已有棋子上：本回合作废';
-    this.currentPlayer = this.getOpponent(this.currentPlayer);
+    this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
     this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
     this.previousBoardKey = this.getBoardKey(this.board);
     this.clearFog();
@@ -1626,7 +1734,7 @@ export default class GoGameScene {
     this.normalizePieceAt(source.row, source.col);
     this.clearPendingFogPlacement();
     this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
-    this.currentPlayer = this.getOpponent(this.currentPlayer);
+    this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
     this.previousBoardKey = this.getBoardKey(this.board);
 
     this.statusMessage = `烟雾弹已投出：以（${row + 1}, ${col + 1}）为中心覆盖 5x5`;
@@ -1663,7 +1771,7 @@ export default class GoGameScene {
 
     this.clearPendingContractPlacement();
     this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
-    this.currentPlayer = this.getOpponent(this.currentPlayer);
+    this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
     const turnStartInfo = this.resolveTurnStartSpecials(this.currentPlayer);
     if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
       this.clearFog();
@@ -1788,7 +1896,7 @@ export default class GoGameScene {
     const wonByCapture = this.checkVictoryAfterCapture(piece.color);
 
     if (endTurn && !wonByCapture) {
-      this.currentPlayer = this.getOpponent(this.currentPlayer);
+      this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
     }
 
     const turnStartInfo = wonByCapture
@@ -3082,12 +3190,15 @@ export default class GoGameScene {
   }
 
   screenToBoard(x, y) {
+    const approxCol = Math.round((x - this.originX) / this.cellSize);
+    const approxRow = Math.round((y - this.originY) / this.cellSize);
+
     let nearest = null;
     let minDist = Infinity;
-    const threshold = this.cellSize * 0.45;
+    const threshold = Math.max(12, this.cellSize * 0.6);
 
-    for (let row = 0; row < BOARD_ROWS; row++) {
-      for (let col = 0; col < BOARD_COLS; col++) {
+    for (let row = approxRow - 2; row <= approxRow + 2; row++) {
+      for (let col = approxCol - 2; col <= approxCol + 2; col++) {
         if (!this.isPlayablePoint(row, col)) continue;
 
         const pos = this.boardToScreen(row, col);
@@ -3098,6 +3209,24 @@ export default class GoGameScene {
         if (dist < minDist) {
           minDist = dist;
           nearest = { row, col };
+        }
+      }
+    }
+
+    if (!nearest) {
+      for (let row = 0; row < BOARD_ROWS; row++) {
+        for (let col = 0; col < BOARD_COLS; col++) {
+          if (!this.isPlayablePoint(row, col)) continue;
+
+          const pos = this.boardToScreen(row, col);
+          const dx = x - pos.x;
+          const dy = y - pos.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          if (dist < minDist) {
+            minDist = dist;
+            nearest = { row, col };
+          }
         }
       }
     }
@@ -3130,7 +3259,74 @@ export default class GoGameScene {
     return null;
   }
 
-  update() {}
+  initTurnTimers() {
+    const totalMs = 5 * 60 * 1000;
+    this.turnTimers = { black: totalMs, white: totalMs };
+    this.lastTimerUpdateAt = Date.now();
+  }
+
+  syncActiveTurnTimer() {
+    if (!this.turnTimers || this.gameOver || !this.currentPlayer) {
+      this.lastTimerUpdateAt = Date.now();
+      return;
+    }
+
+    const now = Date.now();
+    const last = this.lastTimerUpdateAt || now;
+    const delta = Math.max(0, now - last);
+    if (delta <= 0) {
+      this.lastTimerUpdateAt = now;
+      return;
+    }
+
+    const key = this.getColorKey(this.currentPlayer);
+    const remain = Math.max(0, (this.turnTimers[key] || 0) - delta);
+    this.turnTimers[key] = remain;
+    this.lastTimerUpdateAt = now;
+
+    if (remain <= 0) {
+      this.handleTimeoutLoss(this.currentPlayer);
+    }
+  }
+
+  handleTimeoutLoss(loser) {
+    if (this.gameOver) return;
+    const loserKey = this.getColorKey(loser);
+    this.turnTimers[loserKey] = 0;
+    this.gameOver = true;
+    this.winner = this.getOpponent(loser);
+    this.clearPendingSelection();
+    this.clearPendingConfirmPlacement();
+    this.clearPendingContractPlacement();
+    this.clearPendingSacrificePlacement();
+    this.clearPendingRebirthPlacement();
+    this.clearPendingPersuaderPlacement();
+    this.pendingFogPlacement = null;
+    this.pendingPlacement = null;
+    this.directionButtons = null;
+    this.scoreRequestState = null;
+    this.scoreSummary = null;
+    const loserText = this.getColorName(loser);
+    const winnerText = this.getColorName(this.winner);
+    this.statusMessage = `${loserText}超时，${winnerText}获胜`;
+    this.victoryDialog = {
+      title: '对局结束',
+      message: `${winnerText}赢了`,
+      detail: `${loserText}5分钟倒计时耗尽，判负。`,
+      confirmText: '确认返回主界面'
+    };
+  }
+
+  formatTimer(ms) {
+    const totalSeconds = Math.ceil(Math.max(0, ms) / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  update() {
+    this.syncActiveTurnTimer();
+  }
 
   render() {
     ctx.clearRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -3165,19 +3361,104 @@ export default class GoGameScene {
     ctx.textBaseline = 'middle';
     ctx.fillText(this.boardConfig.name || '棋盘', SCREEN_WIDTH / 2, this.titleY);
 
-    ctx.font = '22px Arial';
-    const turnText = this.gameOver
-      ? (this.winner === BLACK ? '对局结束：黑棋获胜' : '对局结束：白棋获胜')
-      : (this.currentPlayer === BLACK ? '当前落子：黑棋' : '当前落子：白棋');
-    ctx.fillText(turnText, SCREEN_WIDTH / 2, this.turnTextY);
-
-    ctx.font = '17px Arial';
-    ctx.fillStyle = '#2f2418';
-    ctx.fillText(this.getCaptureLabelText(), SCREEN_WIDTH / 2, this.turnTextY + 28);
-
     ctx.font = '16px Arial';
     ctx.fillStyle = '#5b3a1f';
     ctx.fillText(this.statusMessage || ' ', SCREEN_WIDTH / 2, this.msgTextY);
+
+    this.drawMiniCardPreview('black');
+    this.drawMiniCardPreview('white');
+  }
+
+  drawMiniCardPreview(color) {
+    const isBlack = this.getColorKey(color) === 'black';
+    const sideKey = isBlack ? 'black' : 'white';
+    const sideColor = isBlack ? BLACK : WHITE;
+    const loadout = this.cardLoadoutByColor ? this.cardLoadoutByColor[sideKey] : [];
+    const x = isBlack ? 14 : SCREEN_WIDTH - 14 - 92;
+    const y = this.previewRowY;
+    const w = 92;
+    const h = this.previewRowH;
+    const isCurrentTurn = this.currentPlayer === sideColor;
+
+    ctx.save();
+    ctx.fillStyle = isBlack ? 'rgba(0,0,0,0.58)' : 'rgba(255,255,255,0.72)';
+    ctx.strokeStyle = isCurrentTurn ? '#f1c40f' : '#8e6e3b';
+    ctx.lineWidth = isCurrentTurn ? 3 : 2;
+    this.drawRoundedRect(x, y, w, h, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 12px Arial';
+    ctx.fillStyle = isBlack ? '#f7f7f7' : '#3b2a18';
+    ctx.fillText(isBlack ? '黑方卡槽' : '白方卡槽', x + w / 2, y + 9);
+
+    const gap = 4;
+    const cardW = 24;
+    const cardH = 24;
+    const startX = x + (w - (cardW * this.maxCardSlots + gap * (this.maxCardSlots - 1))) / 2;
+    for (let i = 0; i < this.maxCardSlots; i++) {
+      const card = loadout ? loadout[i] : null;
+      const cx = startX + i * (cardW + gap);
+      const cy = y + 17;
+      ctx.save();
+      ctx.globalAlpha = !card ? 0.28 : (card.used ? 0.35 : 1);
+      ctx.fillStyle = '#f3e5c8';
+      ctx.strokeStyle = '#8e6e3b';
+      ctx.lineWidth = 1.5;
+      this.drawRoundedRect(cx, cy, cardW, cardH, 6);
+      ctx.fill();
+      ctx.stroke();
+      if (card) {
+        const def = getPieceDef(this.pieceMap, card.type);
+        ctx.fillStyle = '#5b3a1f';
+        ctx.font = '16px Arial';
+        ctx.fillText(def.symbol || '●', cx + cardW / 2, cy + 12);
+        const activeType = this.currentPlayer === sideColor
+          ? this.nextPieceType
+          : (this.nextPieceTypeByColor && this.nextPieceTypeByColor[sideKey]);
+        if (activeType === card.type && !card.used) {
+          ctx.strokeStyle = '#c0392b';
+          ctx.lineWidth = 2;
+          this.drawRoundedRect(cx + 1, cy + 1, cardW - 2, cardH - 2, 5);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+
+    this.drawMiniTurnStone(sideColor, isBlack ? (x + w + 25) : (x - 25), y + h / 2, isCurrentTurn);
+
+    const timer = this.turnTimers ? this.formatTimer(this.turnTimers[sideKey]) : '05:00';
+    const captures = this.captureCounts ? this.captureCounts[sideKey] : 0;
+    ctx.font = 'bold 13px Arial';
+    ctx.fillStyle = '#2f2418';
+    ctx.fillText(`提子 ${captures}`, x + w / 2, y + h + this.previewInfoGap + 6);
+    ctx.fillText(`倒计时 ${timer}`, x + w / 2, y + h + this.previewInfoGap + this.previewInfoLineH + 6);
+
+    ctx.restore();
+  }
+
+  drawMiniTurnStone(color, cx, cy, isActive) {
+    const radius = 20;
+    const pulse = isActive ? (0.45 + 0.55 * (0.5 + 0.5 * Math.sin(Date.now() / 180))) : 1;
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fillStyle = color === BLACK ? '#111' : '#f7f7f7';
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = color === BLACK ? '#f1c40f' : '#8e6e3b';
+    ctx.stroke();
+    if (color === WHITE) {
+      ctx.beginPath();
+      ctx.arc(cx - radius * 0.28, cy - radius * 0.28, radius * 0.24, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.65)';
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   drawBoard() {
@@ -3675,10 +3956,14 @@ export default class GoGameScene {
     }
 
     ctx.fillStyle = '#1f1f1f';
+    ctx.font = 'bold 18px Arial';
+    if (!this.isTutorialMode) {
+      ctx.fillText(this.currentPlayer === BLACK ? '黑方手牌' : '白方手牌', SCREEN_WIDTH / 2, this.cardSlotsLayout[0].y - 18);
+    }
     ctx.font = '16px Arial';
     const bottomText = this.isTutorialMode && this.tutorialLevel
       ? (this.tutorialLevel.tips || '请按提示完成教学目标')
-      : '卡片槽最多 3 张，特殊兵种每张只能用一次';
+      : '下方显示当前回合的大卡牌，上方左右显示黑白双方的微缩卡槽';
     ctx.fillText(bottomText, SCREEN_WIDTH / 2, SCREEN_HEIGHT - 24);
   }
 

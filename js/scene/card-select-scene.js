@@ -19,7 +19,9 @@ export default class CardSelectScene {
     this.pieceMap = pieceMap;
     this.maxSlots = 3;
     this.pool = (pieceConfig.pieces || []).filter((piece) => piece.selectable && piece.id !== 'normal');
-    this.selectedTypes = [];
+    this.blackSelectedTypes = [];
+    this.whiteSelectedTypes = [];
+    this.selectingColor = 'black';
     this.selectedBoard = null;
     this.victoryCondition = { type: 'capture', captureTarget: 5 };
 
@@ -91,8 +93,10 @@ export default class CardSelectScene {
 
   onEnter() {
     if (this.goGameScene) {
-      this.selectedTypes = (this.goGameScene.getEnabledCardTypes() || []).slice(0, this.maxSlots);
+      this.blackSelectedTypes = (this.goGameScene.getEnabledCardTypes('black') || []).slice(0, this.maxSlots);
+      this.whiteSelectedTypes = (this.goGameScene.getEnabledCardTypes('white') || []).slice(0, this.maxSlots);
     }
+    this.selectingColor = 'black';
     this.updateScrollBounds();
   }
 
@@ -107,30 +111,40 @@ export default class CardSelectScene {
     };
   }
 
+  getSelectionByColor(color = this.selectingColor) {
+    return color === 'white' ? this.whiteSelectedTypes : this.blackSelectedTypes;
+  }
+
+  getCurrentSelection() {
+    return this.getSelectionByColor(this.selectingColor);
+  }
+
   isSelected(type) {
-    return this.selectedTypes.includes(type);
+    return this.getCurrentSelection().includes(type);
   }
 
   toggleType(type) {
-    const index = this.selectedTypes.indexOf(type);
+    const selectedTypes = this.getCurrentSelection();
+    const index = selectedTypes.indexOf(type);
     if (index >= 0) {
-      this.selectedTypes.splice(index, 1);
+      selectedTypes.splice(index, 1);
       return;
     }
 
-    if (this.selectedTypes.length >= this.maxSlots) {
+    if (selectedTypes.length >= this.maxSlots) {
       wx.showToast({ title: '最多选择三张卡', icon: 'none' });
       return;
     }
 
-    this.selectedTypes.push(type);
+    selectedTypes.push(type);
   }
 
   startMatch() {
     const board = this.selectedBoard || (this.goGameScene && this.goGameScene.boardConfig);
     this.goGameScene.prepareMatch({
       boardConfig: board,
-      cardTypes: this.selectedTypes,
+      blackCardTypes: this.blackSelectedTypes,
+      whiteCardTypes: this.whiteSelectedTypes,
       victoryCondition: this.victoryCondition
     });
     this.sceneManager.switchTo(this.goGameScene);
@@ -247,21 +261,28 @@ export default class CardSelectScene {
     }
 
     if (inRect(x, y, this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h)) {
-      if (this.victorySelectScene) this.sceneManager.switchTo(this.victorySelectScene);
+      if (this.selectingColor === 'white') {
+        this.selectingColor = 'black';
+      } else if (this.victorySelectScene) this.sceneManager.switchTo(this.victorySelectScene);
       else if (this.boardSelectScene) this.sceneManager.switchTo(this.boardSelectScene);
       return;
     }
 
+    const selectedTypes = this.getCurrentSelection();
     for (let i = 0; i < this.slotRects.length; i++) {
       const rect = this.slotRects[i];
       if (!inRect(x, y, rect.x, rect.y, rect.w, rect.h)) continue;
-      if (!this.selectedTypes[i]) return;
-      this.selectedTypes.splice(i, 1);
+      if (!selectedTypes[i]) return;
+      selectedTypes.splice(i, 1);
       return;
     }
 
     if (inRect(x, y, this.startBtn.x, this.startBtn.y, this.startBtn.w, this.startBtn.h)) {
-      this.startMatch();
+      if (this.selectingColor === 'black') {
+        this.selectingColor = 'white';
+      } else {
+        this.startMatch();
+      }
     }
   }
 
@@ -309,13 +330,13 @@ export default class CardSelectScene {
     ctx.fillStyle = '#1f2430';
     ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 
-    drawButton(this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h, '#4a5568', '返回', 20);
+    drawButton(this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h, '#4a5568', this.selectingColor === 'white' ? '上一步' : '返回', 20);
 
     ctx.fillStyle = '#f5e6a9';
     ctx.font = 'bold 32px Arial';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('选择卡牌', SCREEN_WIDTH / 2, this.titleY);
+    ctx.fillText(this.selectingColor === 'black' ? '黑方选择卡牌' : '白方选择卡牌', SCREEN_WIDTH / 2, this.titleY);
 
     const boardText = this.selectedBoard ? `当前地图：${this.selectedBoard.name}` : '当前地图：未选择';
     const target = Number((this.victoryCondition && this.victoryCondition.captureTarget) || 0);
@@ -327,11 +348,17 @@ export default class CardSelectScene {
 
     ctx.fillStyle = '#d8d8d8';
     ctx.font = '16px Arial';
-    ctx.fillText('从卡牌池中选择最多三张，点击上方卡槽也可移除', SCREEN_WIDTH / 2, this.slotAreaY - 18);
+    ctx.fillText('黑白双方分别独立选牌；点击上方卡槽也可移除', SCREEN_WIDTH / 2, this.slotAreaY - 34);
+    ctx.fillText(`当前正在设置：${this.selectingColor === 'black' ? '黑方' : '白方'}`, SCREEN_WIDTH / 2, this.slotAreaY - 12);
 
+    const selectedTypes = this.getCurrentSelection();
     for (let i = 0; i < this.slotRects.length; i++) {
-      this.drawSlot(this.slotRects[i], this.selectedTypes[i], i);
+      this.drawSlot(this.slotRects[i], selectedTypes[i], i);
     }
+
+    ctx.fillStyle = '#cfcfcf';
+    ctx.font = '14px Arial';
+    ctx.fillText(`黑方：${this.blackSelectedTypes.length}/${this.maxSlots} 张    白方：${this.whiteSelectedTypes.length}/${this.maxSlots} 张`, SCREEN_WIDTH / 2, this.slotAreaY + this.slotH + 16);
 
     ctx.fillStyle = '#f5e6a9';
     ctx.font = 'bold 22px Arial';
@@ -360,6 +387,6 @@ export default class CardSelectScene {
 
     this.drawScrollBar();
 
-    drawButton(this.startBtn.x, this.startBtn.y, this.startBtn.w, this.startBtn.h, '#27ae60', '进入对局', 24);
+    drawButton(this.startBtn.x, this.startBtn.y, this.startBtn.w, this.startBtn.h, '#27ae60', this.selectingColor === 'black' ? '下一步：白方选牌' : '进入对局', 24);
   }
 }
