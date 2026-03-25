@@ -3331,7 +3331,8 @@ export default class GoGameScene {
   render() {
     ctx.clearRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
     this.drawBackground();
-    this.drawTopBar();
+
+    // 先绘制所有棋盘相关内容，再绘制顶部控件，避免缩放后的棋盘遮挡顶部 UI。
     this.drawBoard();
     this.drawPieces();
     this.drawRebirthTargets();
@@ -3340,6 +3341,9 @@ export default class GoGameScene {
     this.drawFogOverlay();
     this.drawPendingConfirmPlacement();
     this.drawPendingPlacement();
+
+    // 顶部控件始终浮在棋盘之上。
+    this.drawTopBar();
     this.drawBottomUI();
     this.drawScoreRequestDialog();
     this.drawVictoryDialog();

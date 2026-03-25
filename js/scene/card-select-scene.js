@@ -346,11 +346,6 @@ export default class CardSelectScene {
     ctx.fillText(boardText, SCREEN_WIDTH / 2, this.titleY + 32);
     ctx.fillText(winText, SCREEN_WIDTH / 2, this.titleY + 58);
 
-    ctx.fillStyle = '#d8d8d8';
-    ctx.font = '16px Arial';
-    ctx.fillText('黑白双方分别独立选牌；点击上方卡槽也可移除', SCREEN_WIDTH / 2, this.slotAreaY - 34);
-    ctx.fillText(`当前正在设置：${this.selectingColor === 'black' ? '黑方' : '白方'}`, SCREEN_WIDTH / 2, this.slotAreaY - 12);
-
     const selectedTypes = this.getCurrentSelection();
     for (let i = 0; i < this.slotRects.length; i++) {
       this.drawSlot(this.slotRects[i], selectedTypes[i], i);
