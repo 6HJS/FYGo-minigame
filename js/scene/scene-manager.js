@@ -55,4 +55,11 @@ export default class SceneManager {
       this.currentScene.onTouchEnd(e);
     }
   }
+
+  onWheel(e) {
+    if (this.currentScene && this.currentScene.onWheel) {
+      this.currentScene.onWheel(e);
+    }
+  }
+
 }

@@ -61,6 +61,63 @@ export default class Main {
     wx.onTouchEnd((e) => {
       this.sceneManager.onTouchEnd(e);
     });
+
+    this.bindMouseWheelZoom();
+  }
+
+  bindMouseWheelZoom() {
+    const normalizeWheelEvent = (event) => {
+      if (!event) return null;
+
+      const x = typeof event.clientX === 'number'
+        ? event.clientX
+        : (typeof event.pageX === 'number' ? event.pageX : (typeof event.offsetX === 'number' ? event.offsetX : canvas.width / 2));
+      const y = typeof event.clientY === 'number'
+        ? event.clientY
+        : (typeof event.pageY === 'number' ? event.pageY : (typeof event.offsetY === 'number' ? event.offsetY : canvas.height / 2));
+
+      let deltaY = 0;
+      if (typeof event.deltaY === 'number') {
+        deltaY = event.deltaY;
+      } else if (typeof event.wheelDelta === 'number') {
+        deltaY = -event.wheelDelta;
+      } else if (typeof event.detail === 'number') {
+        deltaY = event.detail;
+      }
+
+      return {
+        clientX: x,
+        clientY: y,
+        deltaY,
+        ctrlKey: !!event.ctrlKey,
+        metaKey: !!event.metaKey,
+        shiftKey: !!event.shiftKey,
+        preventDefault: () => {
+          if (event.preventDefault) event.preventDefault();
+          event.returnValue = false;
+        }
+      };
+    };
+
+    const wheelHandler = (event) => {
+      const normalized = normalizeWheelEvent(event);
+      if (!normalized || !normalized.deltaY) return;
+      this.sceneManager.onWheel(normalized);
+    };
+
+    const targets = [];
+    if (typeof canvas !== 'undefined' && canvas && canvas.addEventListener) targets.push(canvas);
+    if (typeof window !== 'undefined' && window && window.addEventListener) targets.push(window);
+    if (typeof document !== 'undefined' && document && document.addEventListener) targets.push(document);
+    if (typeof globalThis !== 'undefined' && globalThis && globalThis.addEventListener) targets.push(globalThis);
+
+    const attached = new Set();
+    targets.forEach((target) => {
+      if (!target || attached.has(target) || !target.addEventListener) return;
+      attached.add(target);
+      target.addEventListener('wheel', wheelHandler, { passive: false });
+      target.addEventListener('mousewheel', wheelHandler, { passive: false });
+    });
   }
 
   loop() {

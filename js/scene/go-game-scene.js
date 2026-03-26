@@ -1307,6 +1307,39 @@ export default class GoGameScene {
     this.lastGestureEndAt = Date.now();
   }
 
+  onWheel(e) {
+    if (!e) return;
+
+    const x = typeof e.clientX === 'number' ? e.clientX : SCREEN_WIDTH / 2;
+    const y = typeof e.clientY === 'number' ? e.clientY : this.boardCenterY;
+
+    if (!this.isPointInBoardViewport(x, y)) return;
+
+    const rawDelta = typeof e.deltaY === 'number'
+      ? e.deltaY
+      : (typeof e.wheelDelta === 'number' ? -e.wheelDelta : 0);
+    if (!rawDelta) return;
+
+    const { minScale, maxScale } = this.getBoardScaleLimits();
+    const baseFactor = rawDelta > 0 ? 0.9 : 1.1;
+    const intensity = Math.min(4, Math.max(1, Math.abs(rawDelta) / 120));
+    const scaleFactor = Math.pow(baseFactor, intensity);
+    const oldScale = this.boardScale;
+    const newScale = this.clamp(oldScale * scaleFactor, minScale, maxScale);
+
+    if (Math.abs(newScale - oldScale) < 0.0001) return;
+
+    const anchorBoardX = (x - this.baseOriginX - this.boardOffsetX) / (this.baseCellSize * oldScale);
+    const anchorBoardY = (y - this.baseOriginY - this.boardOffsetY) / (this.baseCellSize * oldScale);
+
+    this.boardScale = newScale;
+    this.boardOffsetX = x - this.baseOriginX - anchorBoardX * this.baseCellSize * newScale;
+    this.boardOffsetY = y - this.baseOriginY - anchorBoardY * this.baseCellSize * newScale;
+    this.applyBoardViewTransform();
+
+    if (e.preventDefault) e.preventDefault();
+  }
+
   getAllValidPoints() {
     const points = [];
     for (let row = 0; row < BOARD_ROWS; row++) {
