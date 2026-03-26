@@ -85,11 +85,11 @@ export default class GoGameScene {
     this.scoreRequestBtn = { x: (SCREEN_WIDTH - 100) / 2, y: this.row1Y, w: 100, h: 40 };
     this.restartBtn = { x: SCREEN_WIDTH - 24 - 100, y: this.row1Y, w: 100, h: 40 };
 
-    this.previewRowY = this.row1Y + 52;
-    this.previewRowH = 46;
-    this.previewInfoGap = 8;
-    this.previewInfoLineH = 16;
-    this.previewExtraInfoH = this.previewInfoGap + this.previewInfoLineH * 2 + 4;
+    this.previewRowY = this.row1Y + 66;
+    this.previewRowH = 56;
+    this.previewInfoGap = 12;
+    this.previewInfoLineH = 22;
+    this.previewExtraInfoH = this.previewInfoGap + this.previewInfoLineH * 4 + 6;
 
     this.titleY = this.previewRowY + this.previewRowH + this.previewExtraInfoH + 14;
     this.turnTextY = this.titleY;
@@ -1648,13 +1648,13 @@ export default class GoGameScene {
 
   getMiniCardPreviewLayout(color) {
     const isBlack = this.getColorKey(color) === 'black';
-    const x = isBlack ? 14 : SCREEN_WIDTH - 14 - 92;
+    const w = 112;
+    const x = isBlack ? 22 : SCREEN_WIDTH - 22 - w;
     const y = this.previewRowY;
-    const w = 92;
     const h = this.previewRowH;
-    const gap = 4;
-    const cardW = 24;
-    const cardH = 24;
+    const gap = 6;
+    const cardW = 28;
+    const cardH = 28;
     const startX = x + (w - (cardW * this.maxCardSlots + gap * (this.maxCardSlots - 1))) / 2;
     const slots = [];
 
@@ -1662,7 +1662,7 @@ export default class GoGameScene {
       slots.push({
         index: i,
         x: startX + i * (cardW + gap),
-        y: y + 17,
+        y: y + 22,
         w: cardW,
         h: cardH
       });
@@ -4995,9 +4995,9 @@ export default class GoGameScene {
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = 'bold 12px Arial';
+    ctx.font = 'bold 14px Arial';
     ctx.fillStyle = isBlack ? '#f7f7f7' : '#3b2a18';
-    ctx.fillText(isBlack ? '黑方卡槽' : '白方卡槽', x + w / 2, y + 9);
+    ctx.fillText(isBlack ? '黑方卡槽' : '白方卡槽', x + w / 2, y + 11);
 
     for (let i = 0; i < this.maxCardSlots; i++) {
       const card = loadout ? loadout[i] : null;
@@ -5017,8 +5017,8 @@ export default class GoGameScene {
       if (card) {
         const def = getPieceDef(this.pieceMap, card.type);
         ctx.fillStyle = '#5b3a1f';
-        ctx.font = '16px Arial';
-        ctx.fillText(def.symbol || '●', cx + cardW / 2, cy + 12);
+        ctx.font = '18px Arial';
+        ctx.fillText(def.symbol || '●', cx + cardW / 2, cy + 14);
         const activeType = this.currentPlayer === sideColor
           ? this.nextPieceType
           : (this.nextPieceTypeByColor && this.nextPieceTypeByColor[sideKey]);
@@ -5038,14 +5038,19 @@ export default class GoGameScene {
       ctx.restore();
     }
 
-    this.drawMiniTurnStone(sideColor, isBlack ? (x + w + 25) : (x - 25), y + h / 2, isCurrentTurn);
+    this.drawMiniTurnStone(sideColor, x + w / 2, y - 12, isCurrentTurn);
 
     const timer = this.turnTimers ? this.formatTimer(this.turnTimers[sideKey]) : '05:00';
     const captures = this.captureCounts ? this.captureCounts[sideKey] : 0;
-    ctx.font = 'bold 13px Arial';
     ctx.fillStyle = '#2f2418';
-    ctx.fillText(`提子 ${captures}`, x + w / 2, y + h + this.previewInfoGap + 6);
-    ctx.fillText(`倒计时 ${timer}`, x + w / 2, y + h + this.previewInfoGap + this.previewInfoLineH + 6);
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('提子', x + w / 2, y + h + this.previewInfoGap + 2);
+    ctx.font = 'bold 20px Arial';
+    ctx.fillText(String(captures), x + w / 2, y + h + this.previewInfoGap + this.previewInfoLineH);
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('倒计时', x + w / 2, y + h + this.previewInfoGap + this.previewInfoLineH * 2 + 2);
+    ctx.font = 'bold 20px Arial';
+    ctx.fillText(timer, x + w / 2, y + h + this.previewInfoGap + this.previewInfoLineH * 3);
 
     ctx.restore();
   }
@@ -5460,29 +5465,23 @@ export default class GoGameScene {
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.clip();
+
+      ctx.fillStyle = '#f8f8f8';
+      ctx.fillRect(x - r - 2, y - r - 2, r * 2 + 4, r * 2 + 4);
+
       ctx.fillStyle = '#111';
       ctx.beginPath();
-      ctx.moveTo(x - r - 2, y - r - 2);
-      ctx.lineTo(x + r + 2, y - r - 2);
-      ctx.lineTo(x - r - 2, y + r + 2);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = '#f8f8f8';
-      ctx.beginPath();
-      ctx.moveTo(x + r + 2, y + r + 2);
-      ctx.lineTo(x + r + 2, y - r - 2);
-      ctx.lineTo(x - r - 2, y + r + 2);
+      ctx.moveTo(x - r * 2, y - r * 2);
+      ctx.lineTo(x + r * 2, y - r * 2);
+      ctx.lineTo(x - r * 2, y + r * 2);
       ctx.closePath();
       ctx.fill();
       ctx.restore();
+
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.strokeStyle = '#5c5c5c';
       ctx.lineWidth = 2;
-      ctx.stroke();
-      ctx.strokeStyle = 'rgba(80, 170, 255, 0.85)';
-      ctx.lineWidth = Math.max(1.5, this.cellSize * 0.05);
-      ctx.beginPath();
-      ctx.moveTo(x - r * 0.82, y - r * 0.82);
-      ctx.lineTo(x + r * 0.82, y + r * 0.82);
       ctx.stroke();
     } else if (cell.color === BLACK) {
       ctx.fillStyle = '#111';
