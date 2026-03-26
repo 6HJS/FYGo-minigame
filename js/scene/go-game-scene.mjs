@@ -2656,6 +2656,12 @@ export default class GoGameScene {
   }
 
   startConfirmPlacement(row, col, type = this.nextPieceType, color = this.currentPlayer) {
+    if (type === 'swap_card') {
+      this.clearPendingConfirmPlacement();
+      this.startSwapCardSelection();
+      return;
+    }
+
     this.pendingConfirmPlacement = { row, col, type, color };
     const pieceDef = getPieceDef(this.pieceMap, type);
     this.statusMessage = `再次点击闪烁${pieceDef.name}确认落子，点其他有效位置可移动，点棋盘外取消`;
@@ -2695,6 +2701,11 @@ export default class GoGameScene {
 
     if (type === 'teleport') {
       this.startTeleportPlacement(row, col);
+      return true;
+    }
+
+    if (type === 'swap_card') {
+      this.startSwapCardSelection();
       return true;
     }
 
@@ -3311,6 +3322,11 @@ export default class GoGameScene {
       } else {
         this.statusMessage = '盗贼需要先点一枚对方棋子';
       }
+      return;
+    }
+
+    if (this.nextPieceType === 'swap_card') {
+      this.startSwapCardSelection();
       return;
     }
 
