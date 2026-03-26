@@ -57,6 +57,9 @@ export default class GoGameScene {
     this.komi = 6.5;
     this.scoreRequestState = null;
     this.scoreSummary = null;
+    this.scoreTerritoryMap = null;
+    this.scoreReviewBoard = null;
+    this.scoreReviewMode = false;
     this.winner = null;
     this.gameOver = false;
     this.victoryDialog = null;
@@ -132,7 +135,8 @@ export default class GoGameScene {
 
   buildVictoryDialogLayout() {
     const w = Math.min(SCREEN_WIDTH - 56, 360);
-    const h = 220;
+    const hasScoreReview = !!this.scoreSummary;
+    const h = hasScoreReview ? 278 : 220;
     const x = (SCREEN_WIDTH - w) / 2;
     const y = (SCREEN_HEIGHT - h) / 2 - 12;
     return {
@@ -142,10 +146,16 @@ export default class GoGameScene {
       h,
       confirmBtn: {
         x: x + 32,
+        y: y + h - 132,
+        w: w - 64,
+        h: 46
+      },
+      reviewBtn: hasScoreReview ? {
+        x: x + 32,
         y: y + h - 74,
         w: w - 64,
         h: 46
-      }
+      } : null
     };
   }
 
@@ -698,31 +708,44 @@ export default class GoGameScene {
     if (!this.scoreRequestState) return;
     const summary = this.calculateTerritoryScore();
     this.scoreSummary = summary;
+    this.scoreTerritoryMap = summary.territoryMap || null;
+    this.scoreReviewBoard = summary.boardAfterDeadRemoval ? this.cloneBoard(summary.boardAfterDeadRemoval) : null;
+    this.scoreReviewMode = false;
     this.scoreRequestState = null;
+    this.captureCounts = {
+      black: summary.blackCaptures,
+      white: summary.whiteCaptures
+    };
     this.gameOver = true;
     this.winner = summary.blackScore > summary.whiteScore ? BLACK : WHITE;
-    this.statusMessage = `点目结束：黑 ${summary.blackScore} 目，白 ${summary.whiteScore} 目`;
+    this.statusMessage = summary.isEstimate
+      ? `点目估算：黑 ${summary.blackScore} 目，白 ${summary.whiteScore} 目`
+      : `点目结束：黑 ${summary.blackScore} 目，白 ${summary.whiteScore} 目`;
     this.openVictoryDialog();
   }
 
   calculateTerritoryScore() {
+    const scoringState = this.prepareScoringState();
+    const scoringBoard = scoringState.board;
+    const captureCounts = scoringState.captureCounts;
     const visited = new Set();
     let blackTerritory = 0;
     let whiteTerritory = 0;
     let neutralTerritory = 0;
     const regionLogs = [];
 
-    this.debugLogBoardForScoring();
+    this.debugLogBoardForScoring(this.board, '原始棋盘');
+    this.debugLogBoardForScoring(scoringBoard, '移除死子后的棋盘');
 
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
         if (!this.isBoardShapeCell(row, col)) continue;
-        if (this.board[row][col] !== EMPTY) continue;
+        if (scoringBoard[row][col] !== EMPTY) continue;
 
         const key = `${row},${col}`;
         if (visited.has(key)) continue;
 
-        const info = this.collectEmptyRegion(row, col, visited);
+        const info = this.collectEmptyRegion(scoringBoard, row, col, visited);
         let owner = 'neutral';
         if (!info.touchesOutside && info.borderColors.size === 1) {
           if (info.borderColors.has(BLACK)) {
@@ -744,15 +767,30 @@ export default class GoGameScene {
           owner,
           borderColors: this.debugFormatBorderColors(info.borderColors),
           touchesOutside: info.touchesOutside,
+          pointsArray: info.points.map(([r, c]) => [r, c]),
           points: info.points.map(([r, c]) => `(${r},${c})`).join(' ')
         });
       }
     }
 
-    const blackCaptures = this.captureCounts.black || 0;
-    const whiteCaptures = this.captureCounts.white || 0;
+    const blackCaptures = captureCounts.black || 0;
+    const whiteCaptures = captureCounts.white || 0;
     const blackScore = blackTerritory + blackCaptures;
     const whiteScore = whiteTerritory + whiteCaptures + this.komi;
+
+    const territoryMap = Array.from({ length: BOARD_ROWS }, (_, row) =>
+      Array.from({ length: BOARD_COLS }, (_, col) => (this.isBoardShapeCell(row, col) ? 'none' : null))
+    );
+
+    regionLogs.forEach((item) => {
+      if (!Array.isArray(item.pointsArray)) return;
+      item.pointsArray.forEach(([r, c]) => {
+        if (territoryMap[r] && territoryMap[r][c] != null) territoryMap[r][c] = item.owner;
+      });
+    });
+
+    const emptyPoints = this.countEmptyPlayablePoints(scoringBoard);
+    const isEstimate = false;
 
     const summary = {
       blackTerritory,
@@ -760,36 +798,238 @@ export default class GoGameScene {
       neutralTerritory,
       blackCaptures,
       whiteCaptures,
+      deadBlackRemoved: scoringState.deadBlackRemoved,
+      deadWhiteRemoved: scoringState.deadWhiteRemoved,
+      deadRemovedTotal: scoringState.deadRemovedTotal,
       komi: this.komi,
       blackScore,
       whiteScore,
       winner: blackScore > whiteScore ? BLACK : WHITE,
-      margin: Math.abs(blackScore - whiteScore)
+      margin: Math.abs(blackScore - whiteScore),
+      territoryMap,
+      boardAfterDeadRemoval: scoringBoard,
+      isEstimate
     };
 
     this.debugLogScoreDetails(regionLogs, summary);
     return summary;
   }
 
-  debugLogBoardForScoring() {
+  prepareScoringState() {
+    const board = this.cloneBoard(this.board);
+    const captureCounts = {
+      black: this.captureCounts.black || 0,
+      white: this.captureCounts.white || 0
+    };
+    const removedGroups = [];
+    let deadBlackRemoved = 0;
+    let deadWhiteRemoved = 0;
+    let changed = true;
+    let iteration = 0;
+
+    while (changed && iteration < 6) {
+      changed = false;
+      iteration += 1;
+
+      const groups = this.collectAllGroupsForBoard(board);
+      const deadGroups = groups
+        .map((item) => this.evaluateGroupLifeForScoring(board, item.group))
+        .filter((item) => item && item.dead)
+        .sort((a, b) => a.group.length - b.group.length);
+
+      if (deadGroups.length === 0) break;
+
+      for (const item of deadGroups) {
+        const stillExists = item.group.every(([row, col]) => this.isPiece(board[row][col]) && board[row][col].color === item.color);
+        if (!stillExists) continue;
+
+        this.removeGroup(board, item.group);
+        changed = true;
+        if (item.color === BLACK) {
+          captureCounts.white += item.group.length;
+          deadBlackRemoved += item.group.length;
+        } else {
+          captureCounts.black += item.group.length;
+          deadWhiteRemoved += item.group.length;
+        }
+
+        removedGroups.push({
+          color: item.color,
+          size: item.group.length,
+          reason: item.reason,
+          eyes: item.eyeCount,
+          liberties: item.libertyCount,
+          secureLiberties: item.secureLibertyCount
+        });
+      }
+    }
+
+    try {
+      console.log('[点目] 自动死子判定', removedGroups.map((item) => ({
+        color: item.color === BLACK ? 'black' : 'white',
+        size: item.size,
+        reason: item.reason,
+        eyes: item.eyes,
+        liberties: item.liberties,
+        secureLiberties: item.secureLiberties
+      })));
+    } catch (err) {
+      console.log('[点目] 自动死子判定输出失败', err);
+    }
+
+    return {
+      board,
+      captureCounts,
+      deadBlackRemoved,
+      deadWhiteRemoved,
+      deadRemovedTotal: deadBlackRemoved + deadWhiteRemoved
+    };
+  }
+
+  collectAllGroupsForBoard(board) {
+    const visited = new Set();
+    const groups = [];
+
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = board[row][col];
+        if (!this.isPiece(cell)) continue;
+        const key = `${row},${col}`;
+        if (visited.has(key)) continue;
+
+        const group = this.getGroup(board, row, col);
+        group.forEach(([gr, gc]) => visited.add(`${gr},${gc}`));
+        groups.push({ color: cell.color, group });
+      }
+    }
+
+    return groups;
+  }
+
+  evaluateGroupLifeForScoring(board, group) {
+    if (!group || group.length === 0) return null;
+    const first = group[0];
+    const cell = board[first[0]][first[1]];
+    if (!this.isPiece(cell)) return null;
+
+    const color = cell.color;
+    const liberties = this.getLiberties(board, group);
+    const libertyPoints = Array.from(liberties).map((key) => key.split(',').map(Number));
+    const eyeRegions = this.getEyeRegionsForGroup(board, group, color);
+    const eyeCount = eyeRegions.length;
+    const secureLibertyCount = libertyPoints.filter(([row, col]) =>
+      !this.isLibertyEnemyControlled(board, row, col, color, group)
+    ).length;
+    const libertyCount = liberties.size;
+    const allControlled = libertyCount > 0 && secureLibertyCount === 0;
+    const libertyThreshold = Math.max(4, Math.ceil(group.length / 3) + 1);
+
+    let dead = false;
+    let reason = '';
+
+    if (eyeCount >= 2) {
+      dead = false;
+      reason = 'two-eyes';
+    } else if (eyeCount >= 1 && libertyCount >= 3 && secureLibertyCount >= 2) {
+      dead = false;
+      reason = 'one-eye-and-liberties';
+    } else if (secureLibertyCount >= libertyThreshold) {
+      dead = false;
+      reason = 'enough-liberties';
+    } else if (eyeCount === 0 && libertyCount <= 1) {
+      dead = true;
+      reason = 'no-eye-and-atari';
+    } else if (eyeCount === 0 && libertyCount <= 2) {
+      dead = true;
+      reason = allControlled ? 'controlled-two-liberties' : 'low-liberties';
+    } else if (eyeCount < 2 && secureLibertyCount <= 1 && libertyCount <= 3) {
+      dead = true;
+      reason = allControlled ? 'fully-controlled' : 'insufficient-liberties';
+    } else if (allControlled && eyeCount < 2) {
+      dead = true;
+      reason = 'all-liberties-controlled';
+    }
+
+    return {
+      color,
+      group,
+      dead,
+      reason,
+      eyeCount,
+      libertyCount,
+      secureLibertyCount
+    };
+  }
+
+  getEyeRegionsForGroup(board, group, color) {
+    const libertySet = this.getLiberties(board, group);
+    const visited = new Set();
+    const eyes = [];
+
+    libertySet.forEach((key) => {
+      if (visited.has(key)) return;
+      const [row, col] = key.split(',').map(Number);
+      const info = this.collectEmptyRegion(board, row, col, visited);
+      if (!info.points.length) return;
+      if (!info.touchesOutside && info.borderColors.size === 1 && info.borderColors.has(color)) {
+        eyes.push(info);
+      }
+    });
+
+    return eyes;
+  }
+
+  isLibertyEnemyControlled(board, row, col, color, group) {
+    const groupSet = new Set(group.map(([gr, gc]) => `${gr},${gc}`));
+    const neighbors = this.getNeighborsForBoard(board, row, col);
+    let enemyCount = 0;
+    let friendlyCount = 0;
+    let extraEmpty = 0;
+
+    for (const [nr, nc] of neighbors) {
+      const cell = board[nr][nc];
+      if (cell === EMPTY) {
+        extraEmpty += 1;
+        continue;
+      }
+      if (!this.isPiece(cell)) continue;
+      if (groupSet.has(`${nr},${nc}`) || cell.color === color) friendlyCount += 1;
+      else enemyCount += 1;
+    }
+
+    return extraEmpty === 0 && enemyCount >= friendlyCount;
+  }
+
+  countEmptyPlayablePoints(board) {
+    let count = 0;
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        if (!this.isBoardShapeCell(row, col)) continue;
+        if (board[row][col] === EMPTY) count += 1;
+      }
+    }
+    return count;
+  }
+
+  debugLogBoardForScoring(board = this.board, label = '当前棋盘') {
     try {
       const rows = [];
       for (let row = 0; row < BOARD_ROWS; row++) {
         const cells = [];
         for (let col = 0; col < BOARD_COLS; col++) {
-          cells.push(this.debugGetBoardCellSymbol(row, col));
+          cells.push(this.debugGetBoardCellSymbol(board, row, col));
         }
         rows.push(`${String(row).padStart(2, '0')}: ${cells.join(' ')}`);
       }
-      console.log('[点目] 当前棋盘：\n' + rows.join('\n'));
+      console.log(`[点目] ${label}：\n` + rows.join('\n'));
     } catch (err) {
-      console.log('[点目] 当前棋盘输出失败', err);
+      console.log(`[点目] ${label}输出失败`, err);
     }
   }
 
-  debugGetBoardCellSymbol(row, col) {
+  debugGetBoardCellSymbol(board, row, col) {
     if (!this.isBoardShapeCell(row, col)) return '  ';
-    const cell = this.board[row][col];
+    const cell = board[row][col];
     if (cell === EMPTY) return '·';
     if (cell === DESTROYED) return 'X';
     if (!this.isPiece(cell)) return '?';
@@ -830,7 +1070,7 @@ export default class GoGameScene {
     }
   }
 
-  collectEmptyRegion(startRow, startCol, visited) {
+  collectEmptyRegion(board, startRow, startCol, visited) {
     const stack = [[startRow, startCol]];
     const points = [];
     const borderColors = new Set();
@@ -847,7 +1087,7 @@ export default class GoGameScene {
         continue;
       }
 
-      const cell = this.board[row][col];
+      const cell = board[row][col];
       if (cell !== EMPTY) continue;
       points.push([row, col]);
 
@@ -860,7 +1100,7 @@ export default class GoGameScene {
           continue;
         }
 
-        const nextCell = this.board[nr][nc];
+        const nextCell = board[nr][nc];
         if (nextCell === EMPTY) {
           const nextKey = `${nr},${nc}`;
           if (!visited.has(nextKey)) stack.push([nr, nc]);
@@ -884,7 +1124,11 @@ export default class GoGameScene {
     if (this.scoreSummary) {
       const summary = this.scoreSummary;
       const marginText = Number.isInteger(summary.margin) ? `${summary.margin}` : `${summary.margin.toFixed(1)}`;
-      detail = `黑 ${summary.blackScore} 目，白 ${summary.whiteScore} 目，${winnerText}胜 ${marginText} 目`;
+      const estimatePrefix = summary.isEstimate ? '当前盘面估算：' : '';
+      const deadText = summary.deadRemovedTotal > 0
+        ? `，自动移除死子 ${summary.deadRemovedTotal} 枚`
+        : '';
+      detail = `${estimatePrefix}黑 ${summary.blackScore} 目，白 ${summary.whiteScore} 目，${winnerText}胜 ${marginText} 目${deadText}`;
     } else {
       const target = this.getCaptureTarget();
       detail = target > 0
@@ -896,7 +1140,8 @@ export default class GoGameScene {
       title: '对局结束',
       message: `${winnerText}赢了`,
       detail,
-      confirmText: '确认返回主界面'
+      confirmText: '确认返回主界面',
+      reviewText: this.scoreSummary ? '查看点目结果' : ''
     };
   }
 
@@ -906,6 +1151,24 @@ export default class GoGameScene {
     if (targetScene) {
       this.sceneManager.switchTo(targetScene);
     }
+  }
+
+  enterScoreReviewMode() {
+    if (!this.scoreSummary || !this.scoreTerritoryMap) return;
+    this.scoreReviewMode = true;
+    this.victoryDialog = null;
+    this.clearPendingSelection();
+    this.clearPendingConfirmPlacement();
+    this.clearPendingContractPlacement();
+    this.clearPendingSacrificePlacement();
+    this.clearPendingRebirthPlacement();
+    this.clearPendingPersuaderPlacement();
+    this.pendingFogPlacement = null;
+    this.pendingPlacement = null;
+    this.directionButtons = null;
+    this.statusMessage = this.scoreSummary && this.scoreSummary.isEstimate
+      ? '点目估算查看中：黑地、白地与中立地已高亮标注'
+      : '点目结果查看中：黑地、白地与中立地已高亮标注';
   }
 
   setEnabledCardTypes(cardTypes, color = 'black') {
@@ -963,6 +1226,9 @@ export default class GoGameScene {
     this.victoryDialog = null;
     this.scoreRequestState = null;
     this.scoreSummary = null;
+    this.scoreTerritoryMap = null;
+    this.scoreReviewBoard = null;
+    this.scoreReviewMode = false;
 
     this.initTurnTimers();
 
@@ -2340,9 +2606,16 @@ export default class GoGameScene {
     }
 
     if (this.gameOver && this.victoryDialog) {
-      const btn = this.victoryDialog.confirmBtn || (this.victoryDialog = this.buildVictoryDialogLayout()).confirmBtn;
-      if (inRect(x, y, btn.x, btn.y, btn.w, btn.h)) {
+      const dialog = this.buildVictoryDialogLayout();
+      this.victoryDialog.confirmBtn = dialog.confirmBtn;
+      this.victoryDialog.reviewBtn = dialog.reviewBtn;
+      if (inRect(x, y, dialog.confirmBtn.x, dialog.confirmBtn.y, dialog.confirmBtn.w, dialog.confirmBtn.h)) {
         this.closeVictoryDialogAndReturnHome();
+        return;
+      }
+      if (dialog.reviewBtn && inRect(x, y, dialog.reviewBtn.x, dialog.reviewBtn.y, dialog.reviewBtn.w, dialog.reviewBtn.h)) {
+        this.enterScoreReviewMode();
+        return;
       }
       return;
     }
@@ -2350,6 +2623,10 @@ export default class GoGameScene {
     if (inRect(x, y, this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h)) {
       const targetScene = this.returnScene || this.homeScene;
       if (targetScene) this.sceneManager.switchTo(targetScene);
+      return;
+    }
+
+    if (this.scoreReviewMode) {
       return;
     }
 
@@ -3452,6 +3729,8 @@ export default class GoGameScene {
     this.directionButtons = null;
     this.scoreRequestState = null;
     this.scoreSummary = null;
+    this.scoreTerritoryMap = null;
+    this.scoreReviewMode = false;
     const loserText = this.getColorName(loser);
     const winnerText = this.getColorName(this.winner);
     this.statusMessage = `${loserText}超时，${winnerText}获胜`;
@@ -3459,7 +3738,8 @@ export default class GoGameScene {
       title: '对局结束',
       message: `${winnerText}赢了`,
       detail: `${loserText}5分钟倒计时耗尽，判负。`,
-      confirmText: '确认返回主界面'
+      confirmText: '确认返回主界面',
+      reviewText: ''
     };
   }
 
@@ -3480,6 +3760,7 @@ export default class GoGameScene {
 
     // 先绘制所有棋盘相关内容，再绘制顶部控件，避免缩放后的棋盘遮挡顶部 UI。
     this.drawBoard();
+    this.drawScoreTerritoryOverlay();
     this.drawPieces();
     this.drawRebirthTargets();
     this.drawContracts();
@@ -3501,9 +3782,15 @@ export default class GoGameScene {
   }
 
   drawTopBar() {
-    drawButton(this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h, '#34495e', '返回');
-    drawButton(this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h, '#f1c40f', '申请点目', 20, '#3b2a18');
-    drawButton(this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h, '#27ae60', '重开');
+    const backText = this.scoreReviewMode ? '返回主页' : '返回';
+    drawButton(this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h, '#34495e', backText);
+    if (this.scoreReviewMode) {
+      drawButton(this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h, '#bdc3c7', '点目结果', 18, '#5f6a6a');
+      drawButton(this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h, '#bdc3c7', '已结束', 18, '#5f6a6a');
+    } else {
+      drawButton(this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h, '#f1c40f', '申请点目', 20, '#3b2a18');
+      drawButton(this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h, '#27ae60', '重开');
+    }
 
     ctx.fillStyle = '#1f1f1f';
     ctx.font = 'bold 28px Arial';
@@ -3587,6 +3874,44 @@ export default class GoGameScene {
     ctx.fillText(`提子 ${captures}`, x + w / 2, y + h + this.previewInfoGap + 6);
     ctx.fillText(`倒计时 ${timer}`, x + w / 2, y + h + this.previewInfoGap + this.previewInfoLineH + 6);
 
+    ctx.restore();
+  }
+
+  drawScoreTerritoryOverlay() {
+    if (!this.scoreReviewMode || !this.scoreTerritoryMap) return;
+
+    const board = this.getDisplayBoard();
+    ctx.save();
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        if (!this.isBoardShapeCell(row, col)) continue;
+        if (board[row][col] !== EMPTY) continue;
+
+        const owner = this.scoreTerritoryMap[row] ? this.scoreTerritoryMap[row][col] : null;
+        if (!owner || owner === 'none') continue;
+
+        const { x, y } = this.boardToScreen(row, col);
+        const radius = Math.max(8, this.cellSize * 0.28);
+
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+
+        if (owner === 'black') {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.26)';
+          ctx.strokeStyle = 'rgba(0, 0, 0, 0.65)';
+        } else if (owner === 'white') {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
+          ctx.strokeStyle = 'rgba(120, 90, 40, 0.9)';
+        } else {
+          ctx.fillStyle = 'rgba(241, 196, 15, 0.30)';
+          ctx.strokeStyle = 'rgba(160, 110, 20, 0.85)';
+        }
+
+        ctx.lineWidth = 2;
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
     ctx.restore();
   }
 
@@ -3680,9 +4005,12 @@ export default class GoGameScene {
 
     ctx.fillStyle = '#6b4f2c';
     ctx.font = '18px Arial';
-    ctx.fillText(dialog.detail || '', rect.x + rect.w / 2, rect.y + 132);
+    ctx.fillText(dialog.detail || '', rect.x + rect.w / 2, rect.y + rect.h / 2 - 6);
 
     drawButton(rect.confirmBtn.x, rect.confirmBtn.y, rect.confirmBtn.w, rect.confirmBtn.h, '#27ae60', dialog.confirmText || '确认');
+    if (rect.reviewBtn) {
+      drawButton(rect.reviewBtn.x, rect.reviewBtn.y, rect.reviewBtn.w, rect.reviewBtn.h, '#f1c40f', dialog.reviewText || '查看点目结果', 20, '#3b2a18');
+    }
     ctx.restore();
   }
 
@@ -3725,18 +4053,24 @@ export default class GoGameScene {
     }
   }
 
+  getDisplayBoard() {
+    return this.scoreReviewMode && this.scoreReviewBoard ? this.scoreReviewBoard : this.board;
+  }
+
   canDrawConnection(row, col) {
-    return this.isBoardShapeCell(row, col) && this.board[row][col] !== DESTROYED;
+    const board = this.getDisplayBoard();
+    return this.isBoardShapeCell(row, col) && board[row][col] !== DESTROYED;
   }
 
   drawBoardPoints() {
+    const board = this.getDisplayBoard();
     ctx.fillStyle = '#2c1e12';
     const centerRow = Math.round((this.minRow + this.maxRow) / 2);
     const centerCol = Math.round((this.minCol + this.maxCol) / 2);
 
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
-        if (!this.isPlayablePoint(row, col)) continue;
+        if (!this.isBoardShapeCell(row, col) || board[row][col] === DESTROYED) continue;
         const { x, y } = this.boardToScreen(row, col);
         const isTengen = row === centerRow && col === centerCol;
         const radius = isTengen ? Math.max(4.5, this.cellSize * 0.16) : Math.max(0.2, this.cellSize * 0.04);
@@ -3749,9 +4083,10 @@ export default class GoGameScene {
   }
 
   drawDestroyedCells() {
+    const board = this.getDisplayBoard();
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
-        if (this.board[row][col] !== DESTROYED) continue;
+        if (board[row][col] !== DESTROYED) continue;
         const { x, y } = this.boardToScreen(row, col);
         const size = this.cellSize * 1.08;
 
@@ -3764,9 +4099,10 @@ export default class GoGameScene {
   }
 
   drawPieces() {
+    const board = this.getDisplayBoard();
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
-        const cell = this.board[row][col];
+        const cell = board[row][col];
         if (!this.isPiece(cell)) continue;
         const { x, y } = this.boardToScreen(row, col);
         this.drawOnePiece(x, y, cell, row, col);
@@ -4099,6 +4435,43 @@ export default class GoGameScene {
   drawBottomUI() {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+
+    if (this.scoreReviewMode && this.scoreSummary) {
+      const legendY = SCREEN_HEIGHT - 108;
+      const itemGap = 106;
+      const startX = SCREEN_WIDTH / 2 - itemGap;
+      const items = [
+        { label: '黑地', fill: 'rgba(0, 0, 0, 0.26)', stroke: 'rgba(0, 0, 0, 0.65)' },
+        { label: '白地', fill: 'rgba(255, 255, 255, 0.72)', stroke: 'rgba(120, 90, 40, 0.9)' },
+        { label: '中立', fill: 'rgba(241, 196, 15, 0.30)', stroke: 'rgba(160, 110, 20, 0.85)' }
+      ];
+
+      items.forEach((item, index) => {
+        const cx = startX + index * itemGap;
+        ctx.beginPath();
+        ctx.arc(cx, legendY, 12, 0, Math.PI * 2);
+        ctx.fillStyle = item.fill;
+        ctx.strokeStyle = item.stroke;
+        ctx.lineWidth = 2;
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#1f1f1f';
+        ctx.font = 'bold 15px Arial';
+        ctx.fillText(item.label, cx, legendY + 28);
+      });
+
+      const s = this.scoreSummary;
+      ctx.fillStyle = '#1f1f1f';
+      ctx.font = '16px Arial';
+      const extraText = s.isEstimate
+        ? `（估算）自动移除死子 ${s.deadRemovedTotal} 枚`
+        : `自动移除死子 ${s.deadRemovedTotal} 枚`;
+      ctx.fillText(`黑 ${s.blackScore} 目  白 ${s.whiteScore} 目`, SCREEN_WIDTH / 2, SCREEN_HEIGHT - 64);
+      ctx.fillText(extraText, SCREEN_WIDTH / 2, SCREEN_HEIGHT - 42);
+      ctx.fillText('当前仅可查看点目归属，点击左上角返回主页', SCREEN_WIDTH / 2, SCREEN_HEIGHT - 20);
+      return;
+    }
 
     for (const slot of this.cardSlotsLayout) {
       const card = this.getCardDataBySlot(slot.index);

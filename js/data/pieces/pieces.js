@@ -13,7 +13,7 @@ module.exports = {
     {
       id: 'cavalry',
       name: '骑兵',
-      symbol: '🐴',
+      symbol: '♞',
       needsDirection: true,
       selectable: true,
       buttonColor: '#8e6e3b',
@@ -30,7 +30,7 @@ module.exports = {
     {
       id: 'fog',
       name: '迷雾',
-      symbol: '🌫',
+      symbol: '≋',
       needsDirection: false,
       selectable: true,
       buttonColor: '#8e6e3b',
@@ -42,7 +42,7 @@ module.exports = {
     {
       id: 'rebirth',
       name: '重生',
-      symbol: '🌱',
+      symbol: '☘',
       needsDirection: false,
       selectable: true,
       buttonColor: '#8e6e3b',
@@ -54,7 +54,7 @@ module.exports = {
     {
       id: 'persuader',
       name: '说客',
-      symbol: '📢',
+      symbol: '☞',
       needsDirection: false,
       selectable: true,
       buttonColor: '#8e6e3b',
@@ -88,7 +88,7 @@ module.exports = {
     {
       id: 'bomber',
       name: '自爆兵',
-      symbol: '💥',
+      symbol: '✹',
       needsDirection: true,
       selectable: true,
       buttonColor: '#8e6e3b',
@@ -112,7 +112,7 @@ module.exports = {
     {
       id: 'reverse',
       name: '逆转',
-      symbol: '🔄',
+      symbol: '↺',
       needsDirection: false,
       selectable: true,
       buttonColor: '#8e6e3b',
@@ -125,7 +125,7 @@ module.exports = {
     {
       id: 'repulsion',
       name: '斥力',
-      symbol: '⤡',
+      symbol: '⇱',
       needsDirection: false,
       selectable: true,
       buttonColor: '#8e6e3b',
@@ -136,7 +136,7 @@ module.exports = {
     {
       id: 'gravity',
       name: '引力',
-      symbol: '⤢',
+      symbol: '⇲',
       needsDirection: false,
       selectable: true,
       buttonColor: '#8e6e3b',
@@ -148,7 +148,7 @@ module.exports = {
     {
       id: 'archer',
       name: '弓箭手',
-      symbol: '🏹',
+      symbol: '➶',
       needsDirection: true,
       selectable: true,
       buttonColor: '#8e6e3b',
@@ -160,7 +160,7 @@ module.exports = {
     {
       id: 'symphony',
       name: '交响',
-      symbol: '💘',
+      symbol: '♬',
       needsDirection: false,
       selectable: true,
       buttonColor: '#8e6e3b',
@@ -171,7 +171,7 @@ module.exports = {
     {
       id: 'fortress',
       name: '堡垒兵',
-      symbol: '🪏',
+      symbol: '▣',
       needsDirection: true,
       selectable: true,
       buttonColor: '#8e6e3b',
