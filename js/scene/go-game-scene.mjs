@@ -249,9 +249,14 @@ export default class GoGameScene {
   setCurrentPlayer(player) {
     this.syncActiveTurnTimer();
     this.cacheActivePlayerNextPieceType();
+    const previousPlayer = this.currentPlayer;
+    if (previousPlayer && previousPlayer !== player && this.isTurnPressureActiveForPlayer(previousPlayer)) {
+      this.clearTurnPressure(false);
+    }
     this.currentPlayer = player;
     this.syncActivePlayerCardState();
     this.lastTimerUpdateAt = Date.now();
+    this.activatePendingTurnPressureForPlayer(player);
   }
 
 
@@ -305,6 +310,9 @@ export default class GoGameScene {
     this.clearPendingSacrificePlacement();
     this.clearPendingRebirthPlacement();
     this.clearPendingPersuaderPlacement();
+    this.clearPendingThiefPlacement();
+    this.clearPendingTeleportPlacement();
+    this.clearPendingSwapCardSelection();
     this.contractLinks = [];
     this.fogState = null;
     this.tutorialFogPreviewUntil = 0;
@@ -694,6 +702,9 @@ export default class GoGameScene {
     this.clearPendingSacrificePlacement();
     this.clearPendingRebirthPlacement();
     this.clearPendingPersuaderPlacement();
+    this.clearPendingThiefPlacement();
+    this.clearPendingTeleportPlacement();
+    this.clearPendingSwapCardSelection();
     this.pendingFogPlacement = null;
   }
 
@@ -1163,6 +1174,9 @@ export default class GoGameScene {
     this.clearPendingSacrificePlacement();
     this.clearPendingRebirthPlacement();
     this.clearPendingPersuaderPlacement();
+    this.clearPendingThiefPlacement();
+    this.clearPendingTeleportPlacement();
+    this.clearPendingSwapCardSelection();
     this.pendingFogPlacement = null;
     this.pendingPlacement = null;
     this.directionButtons = null;
@@ -1183,6 +1197,8 @@ export default class GoGameScene {
     this.clearPendingConfirmPlacement();
     this.clearPendingContractPlacement();
     this.clearPendingSacrificePlacement();
+    this.clearPendingTeleportPlacement();
+    this.clearPendingSwapCardSelection();
   }
 
   prepareMatch(options = {}) {
@@ -1253,7 +1269,21 @@ export default class GoGameScene {
     this.pendingPersuaderPlacement = null;
     this.pendingFogPlacement = null;
     this.pendingSacrificePlacement = null;
+    this.pendingThiefPlacement = null;
+    this.pendingTeleportPlacement = null;
+    this.pendingSwapCardSelection = null;
     this.fogState = null;
+    this.lastPlagueResolution = null;
+    this.timeLimitEffect = null;
+    this.turnPressure = {
+      active: false,
+      targetPlayer: null,
+      startedAt: 0,
+      durationMs: 0,
+      remainingMs: 0,
+      displaySeconds: 0,
+      pulsePhase: 0
+    };
 
     this.calcBoardLayout();
     this.resetBoardViewTransform();
@@ -1616,6 +1646,39 @@ export default class GoGameScene {
     return points;
   }
 
+  getMiniCardPreviewLayout(color) {
+    const isBlack = this.getColorKey(color) === 'black';
+    const x = isBlack ? 14 : SCREEN_WIDTH - 14 - 92;
+    const y = this.previewRowY;
+    const w = 92;
+    const h = this.previewRowH;
+    const gap = 4;
+    const cardW = 24;
+    const cardH = 24;
+    const startX = x + (w - (cardW * this.maxCardSlots + gap * (this.maxCardSlots - 1))) / 2;
+    const slots = [];
+
+    for (let i = 0; i < this.maxCardSlots; i++) {
+      slots.push({
+        index: i,
+        x: startX + i * (cardW + gap),
+        y: y + 17,
+        w: cardW,
+        h: cardH
+      });
+    }
+
+    return { x, y, w, h, slots };
+  }
+
+  getMiniCardPreviewSlotAt(x, y, color) {
+    const layout = this.getMiniCardPreviewLayout(color);
+    for (const slot of layout.slots) {
+      if (inRect(x, y, slot.x, slot.y, slot.w, slot.h)) return slot;
+    }
+    return null;
+  }
+
   getCardDataBySlot(slotIndex, color = this.currentPlayer) {
     const loadout = color === this.currentPlayer ? this.cardLoadout : (this.cardLoadoutByColor ? this.cardLoadoutByColor[this.getColorKey(color)] : null);
     return (loadout && loadout[slotIndex]) || null;
@@ -1651,6 +1714,145 @@ export default class GoGameScene {
       }
     }
     return false;
+  }
+
+  clearPendingSwapCardSelection() {
+    this.pendingSwapCardSelection = null;
+  }
+
+  canStartSwapCardSelection() {
+    if (!this.hasAvailableCard('swap_card')) return { ok: false, message: '这张卡已经用掉了' };
+
+    const loadout = this.cardLoadout || [];
+    const ownCandidates = [];
+    for (let i = 0; i < loadout.length; i++) {
+      const card = loadout[i];
+      if (!card || card.used || card.type === 'swap_card') continue;
+      ownCandidates.push(i);
+    }
+    if (ownCandidates.length <= 0) return { ok: false, message: '没有可拿来交换的己方手牌' };
+
+    const opponentKey = this.getColorKey(this.getOpponent(this.currentPlayer));
+    const opponentLoadout = this.cardLoadoutByColor ? (this.cardLoadoutByColor[opponentKey] || []) : [];
+    const enemyCandidates = [];
+    for (let i = 0; i < opponentLoadout.length; i++) {
+      const card = opponentLoadout[i];
+      if (!card || card.used) continue;
+      enemyCandidates.push(i);
+    }
+    if (enemyCandidates.length <= 0) return { ok: false, message: '对方没有可交换的手牌' };
+
+    return { ok: true };
+  }
+
+  startSwapCardSelection() {
+    const check = this.canStartSwapCardSelection();
+    if (!check.ok) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = check.message;
+      return false;
+    }
+
+    this.clearPendingSelection();
+    this.clearPendingConfirmPlacement();
+    this.clearPendingContractPlacement();
+    this.clearPendingRebirthPlacement();
+    this.clearPendingPersuaderPlacement();
+    this.clearPendingFogPlacement();
+    this.clearPendingThiefPlacement();
+    this.clearPendingTeleportPlacement();
+    this.clearPendingSacrificePlacement();
+
+    this.pendingSwapCardSelection = { stage: 'own', ownSlotIndex: -1 };
+    this.nextPieceType = 'swap_card';
+    this.statusMessage = '换牌已选中：请先在下方选择自己的一张未使用手牌';
+    return true;
+  }
+
+  selectOwnSwapCard(slotIndex) {
+    const pending = this.pendingSwapCardSelection;
+    if (!pending) return false;
+
+    const card = this.getCardDataBySlot(slotIndex);
+    if (!card || card.used) {
+      this.statusMessage = '请选择一张未使用的己方手牌';
+      return false;
+    }
+    if (card.type === 'swap_card') {
+      this.statusMessage = '换牌卡自己不能作为被交换目标';
+      return false;
+    }
+
+    pending.stage = 'enemy';
+    pending.ownSlotIndex = slotIndex;
+    const def = getPieceDef(this.pieceMap, card.type);
+    this.statusMessage = `已选中己方 ${def.name}：请点击上方对方卡槽中的一张未使用手牌`;
+    return true;
+  }
+
+  performSwapCard(enemySlotIndex) {
+    const pending = this.pendingSwapCardSelection;
+    if (!pending || pending.ownSlotIndex < 0) return false;
+
+    const currentKey = this.getColorKey(this.currentPlayer);
+    const opponentKey = this.getColorKey(this.getOpponent(this.currentPlayer));
+    const ownLoadout = this.cardLoadoutByColor ? this.cardLoadoutByColor[currentKey] : null;
+    const enemyLoadout = this.cardLoadoutByColor ? this.cardLoadoutByColor[opponentKey] : null;
+    if (!ownLoadout || !enemyLoadout) return false;
+
+    const ownCard = ownLoadout[pending.ownSlotIndex];
+    const enemyCard = enemyLoadout[enemySlotIndex];
+    if (!ownCard || ownCard.used || ownCard.type === 'swap_card') {
+      this.statusMessage = '己方所选手牌已无效，请重新选择';
+      this.pendingSwapCardSelection = { stage: 'own', ownSlotIndex: -1 };
+      return false;
+    }
+    if (!enemyCard || enemyCard.used) {
+      this.statusMessage = '对方所选手牌已无效，请重新选择';
+      return false;
+    }
+
+    ownLoadout[pending.ownSlotIndex] = { ...enemyCard };
+    enemyLoadout[enemySlotIndex] = { ...ownCard };
+    this.consumeCard('swap_card');
+    this.syncActivePlayerCardState();
+
+    const ownDef = getPieceDef(this.pieceMap, ownCard.type);
+    const enemyDef = getPieceDef(this.pieceMap, enemyCard.type);
+
+    const wonByCapture = this.checkVictoryAfterCapture(this.currentPlayer);
+    if (!wonByCapture) {
+      this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
+    }
+
+    const turnStartInfo = wonByCapture
+      ? { persuadedCount: 0, vanishedCount: 0, archerShotCount: 0, archerKillCount: 0, archerDisabledCount: 0, plagueInfo: { infectedCount: 0, deathCount: 0, recoverCount: 0, vanishedCount: 0 }, teleportInfo: { movedCount: 0, failedCount: 0, finishedCount: 0 } }
+      : this.resolveTurnStartSpecials(this.currentPlayer);
+    if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
+      this.clearFog();
+    }
+
+    if (turnStartInfo.plagueInfo && (turnStartInfo.plagueInfo.deathCount > 0 || turnStartInfo.plagueInfo.recoverCount > 0)) {
+      this.statusMessage = `换牌完成：己方 ${ownDef.name} ↔ 对方 ${enemyDef.name}。瘟疫结算：病死 ${turnStartInfo.plagueInfo.deathCount} 枚，康复 ${turnStartInfo.plagueInfo.recoverCount} 枚`;
+    } else if (turnStartInfo.archerDisabledCount > 0) {
+      this.statusMessage = `换牌完成：己方 ${ownDef.name} ↔ 对方 ${enemyDef.name}。有 ${turnStartInfo.archerDisabledCount} 枚弓箭手被敌子贴身，失去射箭能力`;
+    } else if (turnStartInfo.archerShotCount > 0) {
+      this.statusMessage = turnStartInfo.archerKillCount > 0
+        ? `换牌完成：己方 ${ownDef.name} ↔ 对方 ${enemyDef.name}。弓箭手放箭，击杀 ${turnStartInfo.archerKillCount} 枚`
+        : `换牌完成：己方 ${ownDef.name} ↔ 对方 ${enemyDef.name}。弓箭手放箭，但前方没有目标`;
+    } else if (turnStartInfo.persuadedCount > 0 || turnStartInfo.vanishedCount > 0) {
+      this.statusMessage = `换牌完成：己方 ${ownDef.name} ↔ 对方 ${enemyDef.name}。说客发动，转化 ${turnStartInfo.persuadedCount} 枚${turnStartInfo.vanishedCount > 0 ? `，消失 ${turnStartInfo.vanishedCount} 枚` : ''}`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.failedCount > 0) {
+      this.statusMessage = `换牌完成：己方 ${ownDef.name} ↔ 对方 ${enemyDef.name}。瞬移受阻，失效 ${turnStartInfo.teleportInfo.failedCount} 枚`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.movedCount > 0) {
+      this.statusMessage = `换牌完成：己方 ${ownDef.name} ↔ 对方 ${enemyDef.name}。瞬移发动，移动 ${turnStartInfo.teleportInfo.movedCount} 枚`;
+    } else {
+      this.statusMessage = `换牌完成：己方 ${ownDef.name} 与对方 ${enemyDef.name} 已对换`;
+    }
+
+    this.clearPendingSwapCardSelection();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    return true;
   }
 
   cancelPendingContractPlacement() {
@@ -1760,6 +1962,14 @@ export default class GoGameScene {
     this.pendingSacrificePlacement = null;
   }
 
+  clearPendingThiefPlacement() {
+    this.pendingThiefPlacement = null;
+  }
+
+  clearPendingTeleportPlacement() {
+    this.pendingTeleportPlacement = null;
+  }
+
   cancelPendingFogPlacement() {
     const pending = this.pendingFogPlacement;
     if (!pending) return false;
@@ -1787,6 +1997,31 @@ export default class GoGameScene {
     this.lastMove = null;
     this.lastCaptured = [];
     this.statusMessage = '已取消说客落子';
+    return true;
+  }
+
+  cancelPendingTeleportPlacement() {
+    const pending = this.pendingTeleportPlacement;
+    if (!pending) return false;
+
+    this.removePieceById(pending.pieceId);
+    this.refundCard('teleport');
+    this.clearPendingTeleportPlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.previousBoardKey = this.getBoardKey(this.board);
+    this.lastMove = null;
+    this.lastCaptured = [];
+    this.statusMessage = '已取消瞬移落子';
+    return true;
+  }
+
+  cancelPendingThiefPlacement() {
+    const pending = this.pendingThiefPlacement;
+    if (!pending) return false;
+
+    this.clearPendingThiefPlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.statusMessage = '已取消盗贼操作';
     return true;
   }
 
@@ -1942,7 +2177,7 @@ export default class GoGameScene {
     this.previousBoardKey = this.getBoardKey(this.board);
 
     const turnStartInfo = wonByCapture
-      ? { persuadedCount: 0, vanishedCount: 0, archerShotCount: 0, archerKillCount: 0, archerDisabledCount: 0 }
+      ? { persuadedCount: 0, vanishedCount: 0, archerShotCount: 0, archerKillCount: 0, archerDisabledCount: 0, plagueInfo: { infectedCount: 0, deathCount: 0, recoverCount: 0, vanishedCount: 0 }, teleportInfo: { movedCount: 0, failedCount: 0, finishedCount: 0 } }
       : this.resolveTurnStartSpecials(this.currentPlayer);
     if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
       this.clearFog();
@@ -2293,6 +2528,13 @@ export default class GoGameScene {
     const symphonyInfo = piece.type === 'symphony'
       ? this.applySymphonyEffect(row, col)
       : { horizontalTriggered: false, verticalTriggered: false, killedCount: 0, vanishedCount: 0 };
+    const plagueInfectedCount = piece.type === 'plague'
+      ? this.infectConnectedBlocksFrom(row, col, piece.color)
+      : 0;
+
+    if (piece.type === 'time_limit') {
+      this.armTurnPressure(this.getOpponent(piece.color), 10, piece.color);
+    }
 
     if (piece.type === 'gravity' || piece.type === 'repulsion' || piece.type === 'reverse') {
       this.normalizePieceAt(row, col);
@@ -2305,14 +2547,30 @@ export default class GoGameScene {
 
     const contractInfo = this.resolveContracts(advanceContracts);
 
+    const stabilizeOut = this.stabilizeBoardState(this.board);
+    if (stabilizeOut.changed) {
+      const extraRemoved = stabilizeOut.removed || [];
+      const extraCounted = stabilizeOut.counted || [];
+      if (extraRemoved.length > 0) {
+        this.lastCaptured = (this.lastCaptured || []).concat(extraRemoved);
+      }
+      if (extraCounted.length > 0 && (piece.color === BLACK || piece.color === WHITE)) {
+        const bonus = this.updateCaptureCounts({ captured: extraRemoved, scoreCaptured: extraCounted, reborn: extraRemoved.length - extraCounted.length }, piece.color);
+      }
+      this.previousBoardKey = this.getBoardKey(this.board);
+    }
+
     const wonByCapture = this.checkVictoryAfterCapture(piece.color);
 
     if (endTurn && !wonByCapture) {
+      if (this.isTurnPressureActiveForPlayer(this.currentPlayer)) {
+        this.clearTurnPressure(true);
+      }
       this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
     }
 
     const turnStartInfo = wonByCapture
-      ? { persuadedCount: 0, vanishedCount: 0, archerShotCount: 0, archerKillCount: 0, archerDisabledCount: 0 }
+      ? { persuadedCount: 0, vanishedCount: 0, archerShotCount: 0, archerKillCount: 0, archerDisabledCount: 0, plagueInfo: { infectedCount: 0, deathCount: 0, recoverCount: 0, vanishedCount: 0 }, teleportInfo: { movedCount: 0, failedCount: 0, finishedCount: 0 } }
       : this.resolveTurnStartSpecials(this.currentPlayer);
 
     if (piece.type === 'rebirth' && !endTurn) {
@@ -2321,6 +2579,8 @@ export default class GoGameScene {
       this.statusMessage = '弓箭手已架弓，下一次轮到你时将朝指定方向射箭';
     } else if (contractInfo.chainKillCount > 0) {
       this.statusMessage = `契约触发，同归于尽 ${contractInfo.chainKillCount} 枚`;
+    } else if (turnStartInfo.plagueInfo && (turnStartInfo.plagueInfo.deathCount > 0 || turnStartInfo.plagueInfo.recoverCount > 0)) {
+      this.statusMessage = `瘟疫结算：病死 ${turnStartInfo.plagueInfo.deathCount} 枚，康复 ${turnStartInfo.plagueInfo.recoverCount} 枚`;
     } else if (turnStartInfo.archerDisabledCount > 0) {
       this.statusMessage = `有 ${turnStartInfo.archerDisabledCount} 枚弓箭手被敌子贴身，失去射箭能力`;
     } else if (turnStartInfo.archerShotCount > 0) {
@@ -2329,6 +2589,18 @@ export default class GoGameScene {
         : '弓箭手放箭，但前方没有目标';
     } else if (turnStartInfo.persuadedCount > 0 || turnStartInfo.vanishedCount > 0) {
       this.statusMessage = `说客发动，转化 ${turnStartInfo.persuadedCount} 枚${turnStartInfo.vanishedCount > 0 ? `，消失 ${turnStartInfo.vanishedCount} 枚` : ''}`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.failedCount > 0) {
+      this.statusMessage = `瞬移受阻，失效 ${turnStartInfo.teleportInfo.failedCount} 枚`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.movedCount > 0) {
+      this.statusMessage = `瞬移发动，移动 ${turnStartInfo.teleportInfo.movedCount} 枚`;
+    } else if (piece.type === 'plague') {
+      this.statusMessage = plagueInfectedCount > 0
+        ? `瘟疫扩散，感染 ${plagueInfectedCount} 枚棋子`
+        : '瘟疫落下，但周围没有可感染的棋子块';
+    } else if (piece.type === 'time_limit') {
+      this.statusMessage = '限时生效：对手下一回合只有 10 秒可落子';
+    } else if (piece.type === 'teleport') {
+      this.statusMessage = '请选择第 1 个瞬移空位';
     } else if (piece.type === 'gravity') {
       if (gravityInfo.movedCount > 0 || gravityInfo.vanishedCount > 0) {
         this.statusMessage = `引力触发，拉动 ${gravityInfo.movedCount} 枚${gravityInfo.vanishedCount > 0 ? `，消失 ${gravityInfo.vanishedCount} 枚` : ''}`;
@@ -2421,6 +2693,11 @@ export default class GoGameScene {
       return true;
     }
 
+    if (type === 'teleport') {
+      this.startTeleportPlacement(row, col);
+      return true;
+    }
+
     const selectedDef = getPieceDef(this.pieceMap, type);
     if (selectedDef.needsDirection) {
       this.startSpecialPlacement(row, col, type);
@@ -2455,6 +2732,18 @@ export default class GoGameScene {
       this.board[row][col] = createPiece(cell.color, cell.type, cell.dir, cell.id, {
         archerCooldown: 1,
         archerReady: true
+      });
+      return;
+    }
+
+    if (piece.type === 'teleport') {
+      const cell = this.board[row][col];
+      if (!this.isPiece(cell)) return;
+      this.board[row][col] = createPiece(cell.color, cell.type, cell.dir, cell.id, {
+        teleportTargets: [],
+        teleportStep: 0,
+        teleportCooldown: 1,
+        teleportReady: false
       });
       return;
     }
@@ -2511,11 +2800,112 @@ export default class GoGameScene {
     return { shot: true, killed, disabled: false, blockedByEnemy: false };
   }
 
+
+  infectConnectedBlocksFrom(row, col, sourceColor) {
+    const start = this.board[row] && this.board[row][col];
+    if (!this.isPiece(start)) {
+      this.previousBoardKey = this.getBoardKey(this.board);
+      return 0;
+    }
+
+    const visited = new Set();
+    const stack = [[row, col]];
+    let infectedCount = 0;
+
+    while (stack.length > 0) {
+      const [cr, cc] = stack.pop();
+      const key = `${cr},${cc}`;
+      if (visited.has(key)) continue;
+      visited.add(key);
+
+      if (!this.isPlayablePoint(cr, cc)) continue;
+      const live = this.board[cr][cc];
+      if (!this.isPiece(live)) continue;
+
+      if (!live.infected) infectedCount += 1;
+      this.board[cr][cc] = createPiece(live.color, live.type, live.dir, live.id, {
+        ...live,
+        infected: true,
+        infectionPendingTurns: 1,
+        infectionSourceColor: sourceColor,
+        infectionSeedId: live.id
+      });
+
+      const neighbors = this.getNeighborsForBoard(this.board, cr, cc);
+      for (const [nr, nc] of neighbors) {
+        if (visited.has(`${nr},${nc}`)) continue;
+        const next = this.board[nr][nc];
+        if (!this.isPiece(next)) continue;
+        stack.push([nr, nc]);
+      }
+    }
+
+    this.previousBoardKey = this.getBoardKey(this.board);
+    return infectedCount;
+  }
+
+  resolvePlagueInfections() {
+    let infectedCount = 0;
+    let deathCount = 0;
+    let recoverCount = 0;
+    const toRemove = [];
+
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = this.board[row][col];
+        if (!this.isPiece(cell) || !cell.infected) continue;
+        infectedCount += 1;
+
+        const pendingTurns = Math.max(0, Number(cell.infectionPendingTurns || 0));
+        if (pendingTurns > 0) {
+          this.board[row][col] = createPiece(cell.color, cell.type, cell.dir, cell.id, {
+            ...cell,
+            infectionPendingTurns: pendingTurns - 1
+          });
+          continue;
+        }
+
+        if (Math.random() < 0.5) {
+          toRemove.push([row, col]);
+        } else {
+          this.board[row][col] = createPiece(cell.color, cell.type, cell.dir, cell.id, {
+            ...cell,
+            infected: false,
+            infectionPendingTurns: undefined,
+            infectionSourceColor: undefined,
+            infectionSeedId: undefined
+          });
+          recoverCount += 1;
+        }
+      }
+    }
+
+    for (const [row, col] of toRemove) {
+      const out = this.resolvePieceRemovalAt(row, col, {
+        reason: 'special',
+        allowRebirth: true,
+        scoreByVictimOpposition: true
+      });
+      if (out.removed) deathCount += 1;
+    }
+
+    let vanishedCount = deathCount > 0 ? this.resolveDeadGroupsAfterGravity(null, true) : 0;
+    const stabilizeOut = this.stabilizeBoardState(this.board);
+    if (stabilizeOut.changed) {
+      vanishedCount += (stabilizeOut.counted || []).length;
+    }
+    this.previousBoardKey = this.getBoardKey(this.board);
+    this.lastPlagueResolution = { infectedCount, deathCount, recoverCount, vanishedCount };
+    return this.lastPlagueResolution;
+  }
+
   resolveTurnStartSpecials(player) {
     let persuadedCount = 0;
     let archerShotCount = 0;
     let archerKillCount = 0;
     let archerDisabledCount = 0;
+    const teleportInfo = this.resolveTeleportMoves();
+    const plagueInfo = this.resolvePlagueInfections();
 
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
@@ -2543,9 +2933,84 @@ export default class GoGameScene {
       }
     }
 
-    const vanishedCount = this.resolveDeadGroupsAfterGravity(null, true);
+    let vanishedCount = this.resolveDeadGroupsAfterGravity(null, true);
+    const stabilizeOut = this.stabilizeBoardState(this.board);
+    if (stabilizeOut.changed) {
+      vanishedCount += (stabilizeOut.counted || []).length;
+    }
     this.previousBoardKey = this.getBoardKey(this.board);
-    return { persuadedCount, vanishedCount, archerShotCount, archerKillCount, archerDisabledCount };
+    return { persuadedCount, vanishedCount, archerShotCount, archerKillCount, archerDisabledCount, plagueInfo, teleportInfo };
+  }
+
+
+  resolveTeleportMoves() {
+    let movedCount = 0;
+    let failedCount = 0;
+    let finishedCount = 0;
+    const queue = [];
+
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = this.board[row][col];
+        if (!this.isPiece(cell) || cell.type !== 'teleport') continue;
+        if (!Array.isArray(cell.teleportTargets) || cell.teleportTargets.length === 0) continue;
+        queue.push({ row, col, cell: { ...cell } });
+      }
+    }
+
+    for (const item of queue) {
+      const live = this.board[item.row][item.col];
+      if (!this.isPiece(live) || live.type !== 'teleport' || live.id !== item.cell.id) continue;
+
+      const targets = Array.isArray(live.teleportTargets) ? live.teleportTargets.filter(Boolean) : [];
+      const step = Math.max(0, Number(live.teleportStep || 0));
+      if (step >= targets.length) {
+        this.normalizePieceAt(item.row, item.col);
+        finishedCount += 1;
+        continue;
+      }
+
+      const cooldown = Math.max(0, Number(live.teleportCooldown || 0));
+      if (cooldown > 0) {
+        this.board[item.row][item.col] = createPiece(live.color, live.type, live.dir, live.id, {
+          ...live,
+          teleportCooldown: cooldown - 1,
+          teleportReady: cooldown - 1 <= 0
+        });
+        continue;
+      }
+
+      const target = targets[step];
+      if (!target || !this.isPlayablePoint(target.row, target.col) || this.board[target.row][target.col] !== EMPTY) {
+        this.normalizePieceAt(item.row, item.col);
+        failedCount += 1;
+        continue;
+      }
+
+      const nextStep = step + 1;
+      const extra = {
+        ...live,
+        teleportStep: nextStep,
+        teleportCooldown: 1,
+        teleportReady: false
+      };
+      delete extra.color;
+      delete extra.type;
+      delete extra.dir;
+      delete extra.id;
+
+      this.board[target.row][target.col] = createPiece(live.color, live.type, live.dir, live.id, extra);
+      this.board[item.row][item.col] = EMPTY;
+      this.lastMove = { row: target.row, col: target.col };
+      movedCount += 1;
+
+      if (nextStep >= targets.length) {
+        this.normalizePieceAt(target.row, target.col);
+        finishedCount += 1;
+      }
+    }
+
+    return { movedCount, failedCount, finishedCount };
   }
 
   isPointInBoardViewport(x, y) {
@@ -2648,6 +3113,17 @@ export default class GoGameScene {
     for (const slot of this.cardSlotsLayout) {
       if (!inRect(x, y, slot.x, slot.y, slot.w, slot.h)) continue;
 
+      if (this.pendingSwapCardSelection) {
+        if (this.pendingSwapCardSelection.stage === 'own') {
+          this.selectOwnSwapCard(slot.index);
+        } else {
+          this.clearPendingSwapCardSelection();
+          this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+          this.statusMessage = '已取消换牌';
+        }
+        return;
+      }
+
       if (this.pendingContractPlacement) {
         this.cancelPendingContractPlacement();
         return;
@@ -2668,6 +3144,16 @@ export default class GoGameScene {
         return;
       }
 
+      if (this.pendingThiefPlacement) {
+        this.cancelPendingThiefPlacement();
+        return;
+      }
+
+      if (this.pendingTeleportPlacement) {
+        this.cancelPendingTeleportPlacement();
+        return;
+      }
+
       if (this.pendingSacrificePlacement) {
         this.statusMessage = '献祭已经发动，必须先指定一枚敌子';
         return;
@@ -2676,7 +3162,23 @@ export default class GoGameScene {
       const card = this.getCardDataBySlot(slot.index);
       if (!card || card.used) return;
 
+      if (card.type === 'swap_card') {
+        this.startSwapCardSelection();
+        return;
+      }
+
       this.toggleNextSpecialPiece(card.type);
+      return;
+    }
+
+    if (this.pendingSwapCardSelection && this.pendingSwapCardSelection.stage === 'enemy') {
+      const enemyColor = this.getOpponent(this.currentPlayer);
+      const enemySlot = this.getMiniCardPreviewSlotAt(x, y, enemyColor);
+      if (enemySlot) {
+        this.performSwapCard(enemySlot.index);
+      } else {
+        this.statusMessage = '请点击上方对方卡槽中的一张未使用手牌';
+      }
       return;
     }
 
@@ -2730,6 +3232,37 @@ export default class GoGameScene {
       return;
     }
 
+    if (this.pendingThiefPlacement) {
+      const point = this.screenToBoard(x, y);
+      if (!point) {
+        this.statusMessage = '请选择一个空位，或点下方卡牌取消';
+        return;
+      }
+
+      const cell = this.board[point.row][point.col];
+      if (cell === EMPTY) {
+        this.commitThiefPlacement(this.pendingThiefPlacement.sourceRow, this.pendingThiefPlacement.sourceCol, point.row, point.col);
+      } else if (this.isPiece(cell) && cell.color !== this.currentPlayer) {
+        this.selectThiefSource(point.row, point.col);
+      } else if (this.isPiece(cell) && cell.color === this.currentPlayer) {
+        this.statusMessage = '盗贼不能搬到己方棋子所在位置';
+      } else {
+        this.statusMessage = '盗贼只能把目标棋子搬到空位';
+      }
+      return;
+    }
+
+    if (this.pendingTeleportPlacement) {
+      const point = this.screenToBoard(x, y);
+      if (!point) {
+        const count = (this.pendingTeleportPlacement.targets || []).length;
+        this.statusMessage = count > 0 ? '还需要再选 1 个空位，或点下方卡牌取消' : '请选择第 1 个瞬移空位，或点下方卡牌取消';
+        return;
+      }
+      this.bindPendingTeleportToTarget(point.row, point.col);
+      return;
+    }
+
     if (this.pendingPlacement && this.directionButtons) {
       const dir = this.hitDirectionButton(x, y);
       if (dir) {
@@ -2768,6 +3301,16 @@ export default class GoGameScene {
       this.clearPendingSelection();
       this.clearPendingConfirmPlacement();
       this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      return;
+    }
+
+    if (this.nextPieceType === 'thief') {
+      const cell = this.board[point.row][point.col];
+      if (this.isPiece(cell) && cell.color !== this.currentPlayer) {
+        this.selectThiefSource(point.row, point.col);
+      } else {
+        this.statusMessage = '盗贼需要先点一枚对方棋子';
+      }
       return;
     }
 
@@ -2871,6 +3414,21 @@ export default class GoGameScene {
 
     if (type === 'sacrifice' && this.nextPieceType === type) {
       this.statusMessage = `已选中${pieceDef.name}卡：落在上下左右都是己子的空点，再指定任意一枚敌子`;
+      return;
+    }
+
+    if (type === 'thief' && this.nextPieceType === type) {
+      this.statusMessage = `已选中${pieceDef.name}卡：先点一枚对方棋子，再点空位搬运过去`;
+      return;
+    }
+
+    if (type === 'teleport' && this.nextPieceType === type) {
+      this.statusMessage = `已选中${pieceDef.name}卡：先落子，再依次点 2 个空位作为瞬移点`;
+      return;
+    }
+
+    if (type === 'swap_card' && this.nextPieceType === type) {
+      this.statusMessage = `已选中${pieceDef.name}卡：先选自己一张手牌，再点对方手牌完成交换`;
       return;
     }
 
@@ -3077,6 +3635,291 @@ export default class GoGameScene {
     };
     this.nextPieceType = 'persuader';
     this.statusMessage = '请选择说客上下左右相邻的一枚敌子，或点下方卡牌取消';
+  }
+
+
+  startTeleportPlacement(row, col) {
+    if (!this.isPlayablePoint(row, col)) return;
+
+    if (!this.hasAvailableCard('teleport')) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = '这张卡已经用掉了';
+      return;
+    }
+
+    if (this.board[row][col] !== EMPTY) {
+      this.statusMessage = '此处已有棋子';
+      return;
+    }
+
+    const piece = {
+      color: this.currentPlayer,
+      type: 'teleport',
+      dir: null,
+      id: this.allocPieceId()
+    };
+
+    const result = this.simulatePlacePiece(this.board, row, col, piece, this.currentPlayer);
+    if (!result.ok) {
+      this.statusMessage = result.message || '落子失败';
+      return;
+    }
+
+    this.commitPlacement(row, col, piece, result, { endTurn: false, advanceContracts: true });
+    this.pendingTeleportPlacement = {
+      row,
+      col,
+      color: this.currentPlayer,
+      pieceId: piece.id,
+      targets: []
+    };
+    this.nextPieceType = 'teleport';
+    this.statusMessage = '请选择第 1 个瞬移空位，或点下方卡牌取消';
+  }
+
+  bindPendingTeleportToTarget(row, col) {
+    const pending = this.pendingTeleportPlacement;
+    if (!pending) return false;
+
+    if (!this.isPlayablePoint(row, col)) {
+      this.statusMessage = '请选择一个有效空位';
+      return false;
+    }
+
+    const found = this.findPiecePositionById(pending.pieceId);
+    if (!found) {
+      this.clearPendingTeleportPlacement();
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = '瞬移棋子已不存在';
+      return false;
+    }
+
+    if (!(this.board[row][col] === EMPTY)) {
+      this.statusMessage = '瞬移点必须是空位';
+      return false;
+    }
+
+    if (found.row === row && found.col === col) {
+      this.statusMessage = '瞬移点不能选在棋子当前所在位置';
+      return false;
+    }
+
+    const targets = Array.isArray(pending.targets) ? pending.targets.slice() : [];
+    if (targets.some((item) => item.row === row && item.col === col)) {
+      this.statusMessage = '两个瞬移点不能重复';
+      return false;
+    }
+
+    targets.push({ row, col });
+    pending.targets = targets;
+
+    if (targets.length < 2) {
+      this.statusMessage = '已选第 1 个瞬移点，请再选第 2 个空位';
+      return true;
+    }
+
+    this.board[found.row][found.col] = createPiece(found.cell.color, found.cell.type, found.cell.dir, found.cell.id, {
+      ...found.cell,
+      teleportTargets: targets,
+      teleportStep: 0,
+      teleportCooldown: 1,
+      teleportReady: false
+    });
+
+    const contractInfo = this.resolveContracts(true);
+    const wonByCapture = this.checkVictoryAfterCapture(found.cell.color);
+
+    if (!wonByCapture) {
+      if (this.isTurnPressureActiveForPlayer(this.currentPlayer)) {
+        this.clearTurnPressure(true);
+      }
+      this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
+    }
+
+    const turnStartInfo = wonByCapture
+      ? { persuadedCount: 0, vanishedCount: 0, archerShotCount: 0, archerKillCount: 0, archerDisabledCount: 0, plagueInfo: { infectedCount: 0, deathCount: 0, recoverCount: 0, vanishedCount: 0 }, teleportInfo: { movedCount: 0, failedCount: 0, finishedCount: 0 } }
+      : this.resolveTurnStartSpecials(this.currentPlayer);
+    if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
+      this.clearFog();
+    }
+
+    if (contractInfo.chainKillCount > 0) {
+      this.statusMessage = `契约触发，同归于尽 ${contractInfo.chainKillCount} 枚`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.failedCount > 0) {
+      this.statusMessage = `瞬移受阻，失效 ${turnStartInfo.teleportInfo.failedCount} 枚`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.movedCount > 0) {
+      this.statusMessage = `瞬移发动，移动 ${turnStartInfo.teleportInfo.movedCount} 枚`;
+    } else if (turnStartInfo.plagueInfo && (turnStartInfo.plagueInfo.deathCount > 0 || turnStartInfo.plagueInfo.recoverCount > 0)) {
+      this.statusMessage = `瘟疫结算：病死 ${turnStartInfo.plagueInfo.deathCount} 枚，康复 ${turnStartInfo.plagueInfo.recoverCount} 枚`;
+    } else if (turnStartInfo.archerDisabledCount > 0) {
+      this.statusMessage = `有 ${turnStartInfo.archerDisabledCount} 枚弓箭手被敌子贴身，失去射箭能力`;
+    } else if (turnStartInfo.archerShotCount > 0) {
+      this.statusMessage = turnStartInfo.archerKillCount > 0
+        ? `弓箭手放箭，击杀 ${turnStartInfo.archerKillCount} 枚`
+        : '弓箭手放箭，但前方没有目标';
+    } else if (turnStartInfo.persuadedCount > 0 || turnStartInfo.vanishedCount > 0) {
+      this.statusMessage = `说客发动，转化 ${turnStartInfo.persuadedCount} 枚${turnStartInfo.vanishedCount > 0 ? `，消失 ${turnStartInfo.vanishedCount} 枚` : ''}`;
+    } else {
+      this.statusMessage = '瞬移路径已设定：该棋子将每回合跳向下一个蓝色虚线点';
+    }
+
+    this.clearPendingTeleportPlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    return true;
+  }
+
+  selectThiefSource(row, col) {
+    if (!this.hasAvailableCard('thief')) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = '这张卡已经用掉了';
+      return false;
+    }
+
+    if (!this.isPlayablePoint(row, col)) {
+      this.statusMessage = '请选择一枚对方棋子';
+      return false;
+    }
+
+    const cell = this.board[row][col];
+    if (!this.isPiece(cell) || cell.color === this.currentPlayer) {
+      this.statusMessage = '盗贼只能选择一枚对方棋子';
+      return false;
+    }
+
+    this.pendingThiefPlacement = {
+      sourceRow: row,
+      sourceCol: col,
+      pieceId: cell.id,
+      victimColor: cell.color
+    };
+    this.nextPieceType = 'thief';
+    this.statusMessage = '已选中目标棋子：请点击一个空位，把它搬过去';
+    return true;
+  }
+
+  simulateRelocatePiece(sourceBoard, fromRow, fromCol, toRow, toCol) {
+    if (!this.isPlayablePoint(fromRow, fromCol)) return { ok: false, message: '原位置无效' };
+    if (!this.isPlayablePoint(toRow, toCol)) return { ok: false, message: '不可落子' };
+    if (sourceBoard[toRow][toCol] !== EMPTY) return { ok: false, message: '目标处已有棋子' };
+
+    const sourcePiece = sourceBoard[fromRow][fromCol];
+    if (!this.isPiece(sourcePiece)) return { ok: false, message: '请选择一枚棋子' };
+
+    const player = sourcePiece.color;
+    const opponent = this.getOpponent(player);
+    const beforeBoardKey = this.getBoardKey(sourceBoard);
+    const nextBoard = this.cloneBoard(sourceBoard);
+    const movingPiece = { ...nextBoard[fromRow][fromCol] };
+    nextBoard[fromRow][fromCol] = EMPTY;
+    nextBoard[toRow][toCol] = movingPiece;
+
+    let totalCaptured = [];
+    let scoreCaptured = [];
+    const neighbors = this.getNeighborsForBoard(nextBoard, toRow, toCol);
+    const visitedEnemyGroups = new Set();
+
+    for (const [nr, nc] of neighbors) {
+      const neighbor = nextBoard[nr][nc];
+      if (!this.isPiece(neighbor) || neighbor.color !== opponent) continue;
+
+      const enemyKey = `${nr},${nc}`;
+      if (visitedEnemyGroups.has(enemyKey)) continue;
+
+      const group = this.getGroup(nextBoard, nr, nc);
+      for (const [gr, gc] of group) visitedEnemyGroups.add(`${gr},${gc}`);
+
+      const liberties = this.getLiberties(nextBoard, group);
+      if (liberties.size === 0) {
+        const processed = this.processCapturedGroup(nextBoard, group);
+        totalCaptured = totalCaptured.concat(processed.removed);
+        scoreCaptured = scoreCaptured.concat(processed.counted);
+      }
+    }
+
+    const selfGroup = this.getGroup(nextBoard, toRow, toCol);
+    const selfLiberties = this.getLiberties(nextBoard, selfGroup);
+    if (selfLiberties.size === 0) return { ok: false, message: '搬过去会自杀，不能这样放' };
+
+    const nextBoardKey = this.getBoardKey(nextBoard);
+    if (nextBoardKey === this.previousBoardKey) {
+      return { ok: false, message: '劫争：此处暂不可落子' };
+    }
+
+    return {
+      ok: true,
+      board: nextBoard,
+      movedPiece: movingPiece,
+      captured: totalCaptured,
+      scoreCaptured,
+      reborn: totalCaptured.length - scoreCaptured.length,
+      beforeBoardKey
+    };
+  }
+
+  commitThiefPlacement(fromRow, fromCol, toRow, toCol) {
+    const sourcePiece = this.board[fromRow][fromCol];
+    if (!this.isPiece(sourcePiece) || sourcePiece.color === this.currentPlayer) {
+      this.statusMessage = '所选目标棋子已无效，请重新选择';
+      this.clearPendingThiefPlacement();
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      return false;
+    }
+
+    const result = this.simulateRelocatePiece(this.board, fromRow, fromCol, toRow, toCol);
+    if (!result.ok) {
+      this.statusMessage = result.message || '盗贼搬运失败';
+      return false;
+    }
+
+    this.board = result.board;
+    this.previousBoardKey = result.beforeBoardKey;
+    this.lastMove = { row: toRow, col: toCol };
+    this.lastCaptured = result.captured || [];
+    const gainedCaptures = this.updateCaptureCounts(result, result.movedPiece.color);
+    GameGlobal.musicManager.playDropStone();
+    this.consumeCard('thief');
+
+    this.advanceSpecialPieces({ skipNewlyPlacedKey: `${toRow},${toCol}` });
+    const contractInfo = this.resolveContracts(true);
+    const wonByCapture = this.checkVictoryAfterCapture(result.movedPiece.color);
+
+    if (!wonByCapture) {
+      this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
+    }
+
+    const turnStartInfo = wonByCapture
+      ? { persuadedCount: 0, vanishedCount: 0, archerShotCount: 0, archerKillCount: 0, archerDisabledCount: 0, plagueInfo: { infectedCount: 0, deathCount: 0, recoverCount: 0, vanishedCount: 0 }, teleportInfo: { movedCount: 0, failedCount: 0, finishedCount: 0 } }
+      : this.resolveTurnStartSpecials(this.currentPlayer);
+    if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
+      this.clearFog();
+    }
+
+    if (contractInfo.chainKillCount > 0) {
+      this.statusMessage = `契约触发，同归于尽 ${contractInfo.chainKillCount} 枚`;
+    } else if (turnStartInfo.plagueInfo && (turnStartInfo.plagueInfo.deathCount > 0 || turnStartInfo.plagueInfo.recoverCount > 0)) {
+      this.statusMessage = `瘟疫结算：病死 ${turnStartInfo.plagueInfo.deathCount} 枚，康复 ${turnStartInfo.plagueInfo.recoverCount} 枚`;
+    } else if (turnStartInfo.archerDisabledCount > 0) {
+      this.statusMessage = `有 ${turnStartInfo.archerDisabledCount} 枚弓箭手被敌子贴身，失去射箭能力`;
+    } else if (turnStartInfo.archerShotCount > 0) {
+      this.statusMessage = turnStartInfo.archerKillCount > 0
+        ? `弓箭手放箭，击杀 ${turnStartInfo.archerKillCount} 枚`
+        : '弓箭手放箭，但前方没有目标';
+    } else if (turnStartInfo.persuadedCount > 0 || turnStartInfo.vanishedCount > 0) {
+      this.statusMessage = `说客发动，转化 ${turnStartInfo.persuadedCount} 枚${turnStartInfo.vanishedCount > 0 ? `，消失 ${turnStartInfo.vanishedCount} 枚` : ''}`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.failedCount > 0) {
+      this.statusMessage = `瞬移受阻，失效 ${turnStartInfo.teleportInfo.failedCount} 枚`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.movedCount > 0) {
+      this.statusMessage = `瞬移发动，移动 ${turnStartInfo.teleportInfo.movedCount} 枚`;
+    } else if (gainedCaptures > 0) {
+      this.statusMessage = `盗贼搬运完成，并造成提子 ${gainedCaptures} 枚`;
+    } else {
+      this.statusMessage = '盗贼得手：目标棋子已被搬运';
+    }
+
+    this.clearPendingThiefPlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.handleTutorialPostAction('commit', { type: 'thief', color: this.currentPlayer });
+    return true;
   }
 
   confirmSpecialPlacement(dir) {
@@ -3422,30 +4265,20 @@ export default class GoGameScene {
 
     let totalCaptured = [];
     let scoreCaptured = [];
-    const neighbors = this.getNeighborsForBoard(nextBoard, row, col);
-    const visitedEnemyGroups = new Set();
 
-    for (const [nr, nc] of neighbors) {
-      const neighbor = nextBoard[nr][nc];
-      if (!this.isPiece(neighbor) || neighbor.color !== opponent) continue;
+    const stabilized = this.stabilizeBoardState(nextBoard);
+    totalCaptured = stabilized.removed || [];
+    scoreCaptured = stabilized.counted || [];
 
-      const enemyKey = `${nr},${nc}`;
-      if (visitedEnemyGroups.has(enemyKey)) continue;
-
-      const group = this.getGroup(nextBoard, nr, nc);
-      for (const [gr, gc] of group) visitedEnemyGroups.add(`${gr},${gc}`);
-
-      const liberties = this.getLiberties(nextBoard, group);
-      if (liberties.size === 0) {
-        const processed = this.processCapturedGroup(nextBoard, group);
-        totalCaptured = totalCaptured.concat(processed.removed);
-        scoreCaptured = scoreCaptured.concat(processed.counted);
+    const placedCell = nextBoard[row][col];
+    if (piece.type !== 'yinyang') {
+      if (!this.isPiece(placedCell) || placedCell.id !== piece.id) {
+        return { ok: false, message: '禁入点：不可自杀' };
       }
+      const selfGroup = this.getGroup(nextBoard, row, col);
+      const selfLiberties = this.getLiberties(nextBoard, selfGroup);
+      if (selfLiberties.size === 0) return { ok: false, message: '禁入点：不可自杀' };
     }
-
-    const selfGroup = this.getGroup(nextBoard, row, col);
-    const selfLiberties = this.getLiberties(nextBoard, selfGroup);
-    if (selfLiberties.size === 0) return { ok: false, message: '禁入点：不可自杀' };
 
     const nextBoardKey = this.getBoardKey(nextBoard);
     if (nextBoardKey === this.previousBoardKey) {
@@ -3546,6 +4379,127 @@ export default class GoGameScene {
       .join('|');
   }
 
+
+  isYinYangPiece(cell) {
+    return this.isPiece(cell) && cell.type === 'yinyang';
+  }
+
+  getYinYangSideCells(row, col, color) {
+    if (color === BLACK) {
+      return [
+        [row, col - 1],
+        [row - 1, col]
+      ];
+    }
+    if (color === WHITE) {
+      return [
+        [row, col + 1],
+        [row + 1, col]
+      ];
+    }
+    return [];
+  }
+
+  isYinYangLinkedForColor(yRow, yCol, neighborRow, neighborCol, color) {
+    const dr = neighborRow - yRow;
+    const dc = neighborCol - yCol;
+    if (color === BLACK) {
+      return (dr === 0 && dc === -1) || (dr === -1 && dc === 0);
+    }
+    if (color === WHITE) {
+      return (dr === 0 && dc === 1) || (dr === 1 && dc === 0);
+    }
+    return false;
+  }
+
+  getYinYangSideLibertyKeys(board, row, col, color, visited = null) {
+    const visit = visited || new Set();
+    const visitKey = `${row},${col},${color}`;
+    if (visit.has(visitKey)) return new Set();
+    visit.add(visitKey);
+
+    const liberties = new Set();
+    const sideCells = this.getYinYangSideCells(row, col, color);
+    for (const [sr, sc] of sideCells) {
+      if (!this.isInside(sr, sc) || !this.isBoardShapeCell(sr, sc) || board[sr][sc] === DESTROYED) continue;
+      const cell = board[sr][sc];
+      if (cell === EMPTY) {
+        liberties.add(`${sr},${sc}`);
+        continue;
+      }
+      if (this.isPiece(cell) && cell.color === color) {
+        const group = this.getGroup(board, sr, sc);
+        const groupLiberties = this.getLiberties(board, group, { color, yinyangVisited: visit });
+        groupLiberties.forEach((key) => liberties.add(key));
+      }
+    }
+    return liberties;
+  }
+
+  resolveYinYangTransformTarget(board, row, col) {
+    const cell = board[row][col];
+    if (!this.isYinYangPiece(cell)) return null;
+    const blackLibs = this.getYinYangSideLibertyKeys(board, row, col, BLACK).size;
+    const whiteLibs = this.getYinYangSideLibertyKeys(board, row, col, WHITE).size;
+
+    if (blackLibs <= 0 && whiteLibs > 0) return WHITE;
+    if (whiteLibs <= 0 && blackLibs > 0) return BLACK;
+    return null;
+  }
+
+  stabilizeBoardState(board, options = {}) {
+    const removed = [];
+    const counted = [];
+    let changed = false;
+    let loopGuard = 0;
+
+    while (loopGuard < 24) {
+      loopGuard += 1;
+      let localChanged = false;
+
+      for (let row = 0; row < BOARD_ROWS; row++) {
+        for (let col = 0; col < BOARD_COLS; col++) {
+          const cell = board[row][col];
+          if (!this.isYinYangPiece(cell)) continue;
+          const targetColor = this.resolveYinYangTransformTarget(board, row, col);
+          if (!targetColor) continue;
+          board[row][col] = createPiece(targetColor, 'normal', null, cell.id);
+          localChanged = true;
+          changed = true;
+        }
+      }
+
+      const visited = new Set();
+      const originalBoard = this.board;
+      this.board = board;
+      try {
+        for (let row = 0; row < BOARD_ROWS; row++) {
+          for (let col = 0; col < BOARD_COLS; col++) {
+            const cell = board[row][col];
+            if (!this.isPiece(cell) || cell.color !== BLACK && cell.color !== WHITE) continue;
+            const key = `${row},${col}`;
+            if (visited.has(key)) continue;
+            const group = this.getGroup(board, row, col);
+            for (const [gr, gc] of group) visited.add(`${gr},${gc}`);
+            const liberties = this.getLiberties(board, group);
+            if (liberties.size !== 0) continue;
+            const out = this.processCapturedGroup(board, group);
+            removed.push(...out.removed);
+            counted.push(...out.counted);
+            localChanged = true;
+            changed = true;
+          }
+        }
+      } finally {
+        this.board = originalBoard;
+      }
+
+      if (!localChanged) break;
+    }
+
+    return { board, removed, counted, changed };
+  }
+
   getNeighborsForBoard(board, row, col) {
     const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
     const result = [];
@@ -3588,12 +4542,26 @@ export default class GoGameScene {
     return group;
   }
 
-  getLiberties(board, group) {
+  getLiberties(board, group, options = null) {
     const liberties = new Set();
+    if (!group || group.length === 0) return liberties;
+
+    const first = board[group[0][0]][group[0][1]];
+    const color = options && options.color ? options.color : (this.isPiece(first) ? first.color : null);
+    const yinyangVisited = options && options.yinyangVisited ? options.yinyangVisited : new Set();
+
     for (const [row, col] of group) {
       const neighbors = this.getNeighborsForBoard(board, row, col);
       for (const [nr, nc] of neighbors) {
-        if (board[nr][nc] === EMPTY) liberties.add(`${nr},${nc}`);
+        const cell = board[nr][nc];
+        if (cell === EMPTY) {
+          liberties.add(`${nr},${nc}`);
+          continue;
+        }
+        if ((color === BLACK || color === WHITE) && this.isYinYangPiece(cell) && this.isYinYangLinkedForColor(nr, nc, row, col, color)) {
+          const sideLiberties = this.getYinYangSideLibertyKeys(board, nr, nc, color, yinyangVisited);
+          sideLiberties.forEach((key) => liberties.add(key));
+        }
       }
     }
     return liberties;
@@ -3716,6 +4684,7 @@ export default class GoGameScene {
     if (this.gameOver) return;
     const loserKey = this.getColorKey(loser);
     this.turnTimers[loserKey] = 0;
+    this.clearTurnPressure(false);
     this.gameOver = true;
     this.winner = this.getOpponent(loser);
     this.clearPendingSelection();
@@ -3724,6 +4693,9 @@ export default class GoGameScene {
     this.clearPendingSacrificePlacement();
     this.clearPendingRebirthPlacement();
     this.clearPendingPersuaderPlacement();
+    this.clearPendingThiefPlacement();
+    this.clearPendingTeleportPlacement();
+    this.clearPendingSwapCardSelection();
     this.pendingFogPlacement = null;
     this.pendingPlacement = null;
     this.directionButtons = null;
@@ -3743,6 +4715,184 @@ export default class GoGameScene {
     };
   }
 
+  armTurnPressure(targetPlayer, seconds = 10, ownerColor = null) {
+    this.timeLimitEffect = {
+      targetPlayer,
+      seconds,
+      ownerColor,
+      armed: true
+    };
+  }
+
+  isTurnPressureActiveForPlayer(player) {
+    return !!(this.turnPressure && this.turnPressure.active && this.turnPressure.targetPlayer === player);
+  }
+
+  activatePendingTurnPressureForPlayer(player) {
+    if (!this.timeLimitEffect || !this.timeLimitEffect.armed) return false;
+    if (this.timeLimitEffect.targetPlayer !== player) return false;
+
+    const seconds = Math.max(1, Number(this.timeLimitEffect.seconds || 10));
+    const now = Date.now();
+    this.turnPressure = {
+      active: true,
+      targetPlayer: player,
+      startedAt: now,
+      durationMs: seconds * 1000,
+      remainingMs: seconds * 1000,
+      displaySeconds: seconds,
+      pulsePhase: 0
+    };
+    this.timeLimitEffect.armed = false;
+    return true;
+  }
+
+  clearTurnPressure(clearEffect = true) {
+    if (this.turnPressure) {
+      this.turnPressure.active = false;
+      this.turnPressure.targetPlayer = null;
+      this.turnPressure.remainingMs = 0;
+      this.turnPressure.displaySeconds = 0;
+      this.turnPressure.startedAt = 0;
+      this.turnPressure.durationMs = 0;
+      this.turnPressure.pulsePhase = 0;
+    }
+    if (clearEffect) {
+      this.timeLimitEffect = null;
+    }
+  }
+
+  updateTurnPressure() {
+    if (!this.turnPressure || !this.turnPressure.active || this.gameOver || !this.currentPlayer) return;
+    if (this.turnPressure.targetPlayer !== this.currentPlayer) {
+      this.clearTurnPressure(false);
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = Math.max(0, now - (this.turnPressure.startedAt || now));
+    const remainingMs = Math.max(0, (this.turnPressure.durationMs || 0) - elapsed);
+    this.turnPressure.remainingMs = remainingMs;
+    this.turnPressure.displaySeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+    this.turnPressure.pulsePhase = now;
+
+    if (remainingMs <= 0) {
+      this.handleTurnPressureTimeout();
+    }
+  }
+
+  handleTurnPressureTimeout() {
+    if (!this.turnPressure || !this.turnPressure.active || this.gameOver) return false;
+    const skippedPlayer = this.turnPressure.targetPlayer || this.currentPlayer;
+    if (skippedPlayer !== this.currentPlayer) {
+      this.clearTurnPressure(true);
+      return false;
+    }
+
+    this.clearPendingSelection();
+    this.clearPendingConfirmPlacement();
+    this.clearPendingContractPlacement();
+    this.clearPendingSacrificePlacement();
+    this.clearPendingRebirthPlacement();
+    this.clearPendingPersuaderPlacement();
+    this.clearPendingThiefPlacement();
+    this.clearPendingTeleportPlacement();
+    this.clearPendingSwapCardSelection();
+    this.pendingFogPlacement = null;
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.clearTurnPressure(true);
+
+    const nextPlayer = this.getOpponent(skippedPlayer);
+    this.setCurrentPlayer(nextPlayer);
+    const turnStartInfo = this.resolveTurnStartSpecials(this.currentPlayer);
+    if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
+      this.clearFog();
+    }
+
+    const skippedText = this.getColorName(skippedPlayer);
+    if (turnStartInfo.plagueInfo && (turnStartInfo.plagueInfo.deathCount > 0 || turnStartInfo.plagueInfo.recoverCount > 0)) {
+      this.statusMessage = `${skippedText}10秒超时，回合被跳过；瘟疫结算：病死 ${turnStartInfo.plagueInfo.deathCount} 枚，康复 ${turnStartInfo.plagueInfo.recoverCount} 枚`;
+    } else if (turnStartInfo.archerDisabledCount > 0) {
+      this.statusMessage = `${skippedText}10秒超时，回合被跳过；同时有 ${turnStartInfo.archerDisabledCount} 枚弓箭手被敌子贴身，失去射箭能力`;
+    } else if (turnStartInfo.archerShotCount > 0) {
+      this.statusMessage = turnStartInfo.archerKillCount > 0
+        ? `${skippedText}10秒超时，回合被跳过；同时弓箭手放箭击杀 ${turnStartInfo.archerKillCount} 枚`
+        : `${skippedText}10秒超时，回合被跳过；同时弓箭手放箭但前方没有目标`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.failedCount > 0) {
+      this.statusMessage = `${skippedText}10秒超时，回合被跳过；同时有 ${turnStartInfo.teleportInfo.failedCount} 枚瞬移子受阻失效`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.movedCount > 0) {
+      this.statusMessage = `${skippedText}10秒超时，回合被跳过；同时有 ${turnStartInfo.teleportInfo.movedCount} 枚瞬移子完成跳跃`;
+    } else {
+      this.statusMessage = `${skippedText}10秒超时，自动跳过本回合`;
+    }
+
+    return true;
+  }
+
+  drawTurnPressureOverlay() {
+    if (!this.turnPressure || !this.turnPressure.active || this.gameOver) return;
+
+    const remaining = Math.max(0, this.turnPressure.displaySeconds || 0);
+    const now = Date.now();
+    const critical = remaining <= 3;
+    const pulse = 1 + 0.16 * Math.sin(now / 180);
+    const shake = critical ? 4 : 1.5;
+    const dx = (Math.random() - 0.5) * shake;
+    const dy = (Math.random() - 0.5) * shake;
+    const alpha = critical ? (0.78 + 0.22 * Math.sin(now / 65)) : 0.92;
+    const baseSize = critical ? 158 : 142;
+    const ringAlpha = critical
+      ? (0.16 + 0.06 * (0.5 + 0.5 * Math.sin(now / 120)))
+      : 0.10;
+
+    ctx.save();
+    ctx.translate(dx, dy);
+
+    ctx.fillStyle = 'rgba(20, 0, 0, 0.18)';
+    ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const centerX = SCREEN_WIDTH / 2;
+    const centerY = SCREEN_HEIGHT * 0.30;
+
+    ctx.globalAlpha = 0.14;
+    ctx.fillStyle = '#000000';
+    ctx.beginPath();
+    ctx.arc(centerX, centerY + 8, 118 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.globalAlpha = 1;
+    ctx.shadowColor = '#ff2d2d';
+    ctx.shadowBlur = critical ? 32 : 24;
+    ctx.lineWidth = critical ? 8 : 6;
+    ctx.strokeStyle = critical ? 'rgba(255, 110, 110, 0.72)' : 'rgba(255, 110, 110, 0.62)';
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(150, 0, 0, ${ringAlpha})`;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, 106 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = alpha;
+    ctx.stroke();
+
+    ctx.fillStyle = '#ff1a1a';
+    ctx.font = `bold ${Math.floor(baseSize * pulse)}px Arial`;
+    ctx.fillText(String(remaining), centerX, centerY + 4);
+
+    ctx.shadowBlur = critical ? 22 : 14;
+    ctx.font = `bold ${Math.floor(34 + 4 * Math.sin(now / 220))}px Arial`;
+    ctx.fillStyle = '#ffd6d6';
+    ctx.fillText('限时', centerX, centerY - 102 * pulse);
+
+    ctx.font = 'bold 24px Arial';
+    ctx.fillStyle = '#ffe0e0';
+    ctx.fillText('秒内落子，否则本回合跳过', centerX, centerY + 128 * pulse);
+
+    ctx.restore();
+  }
+
   formatTimer(ms) {
     const totalSeconds = Math.ceil(Math.max(0, ms) / 1000);
     const minutes = Math.floor(totalSeconds / 60);
@@ -3752,6 +4902,7 @@ export default class GoGameScene {
 
   update() {
     this.syncActiveTurnTimer();
+    this.updateTurnPressure();
   }
 
   render() {
@@ -3764,6 +4915,8 @@ export default class GoGameScene {
     this.drawPieces();
     this.drawRebirthTargets();
     this.drawContracts();
+    this.drawTeleportPaths();
+    this.drawPendingTeleportTargetHint();
     this.drawPendingFogTargetHint();
     this.drawFogOverlay();
     this.drawPendingConfirmPlacement();
@@ -3772,6 +4925,7 @@ export default class GoGameScene {
     // 顶部控件始终浮在棋盘之上。
     this.drawTopBar();
     this.drawBottomUI();
+    this.drawTurnPressureOverlay();
     this.drawScoreRequestDialog();
     this.drawVictoryDialog();
   }
@@ -3811,10 +4965,8 @@ export default class GoGameScene {
     const sideKey = isBlack ? 'black' : 'white';
     const sideColor = isBlack ? BLACK : WHITE;
     const loadout = this.cardLoadoutByColor ? this.cardLoadoutByColor[sideKey] : [];
-    const x = isBlack ? 14 : SCREEN_WIDTH - 14 - 92;
-    const y = this.previewRowY;
-    const w = 92;
-    const h = this.previewRowH;
+    const layout = this.getMiniCardPreviewLayout(sideKey);
+    const { x, y, w, h } = layout;
     const isCurrentTurn = this.currentPlayer === sideColor;
 
     ctx.save();
@@ -3831,14 +4983,13 @@ export default class GoGameScene {
     ctx.fillStyle = isBlack ? '#f7f7f7' : '#3b2a18';
     ctx.fillText(isBlack ? '黑方卡槽' : '白方卡槽', x + w / 2, y + 9);
 
-    const gap = 4;
-    const cardW = 24;
-    const cardH = 24;
-    const startX = x + (w - (cardW * this.maxCardSlots + gap * (this.maxCardSlots - 1))) / 2;
     for (let i = 0; i < this.maxCardSlots; i++) {
       const card = loadout ? loadout[i] : null;
-      const cx = startX + i * (cardW + gap);
-      const cy = y + 17;
+      const slot = layout.slots[i];
+      const cx = slot.x;
+      const cy = slot.y;
+      const cardW = slot.w;
+      const cardH = slot.h;
       ctx.save();
       ctx.globalAlpha = !card ? 0.28 : (card.used ? 0.35 : 1);
       ctx.fillStyle = '#f3e5c8';
@@ -3859,6 +5010,12 @@ export default class GoGameScene {
           ctx.strokeStyle = '#c0392b';
           ctx.lineWidth = 2;
           this.drawRoundedRect(cx + 1, cy + 1, cardW - 2, cardH - 2, 5);
+          ctx.stroke();
+        }
+        if (this.pendingSwapCardSelection && this.pendingSwapCardSelection.stage === 'enemy' && this.currentPlayer !== sideColor && !card.used) {
+          ctx.strokeStyle = '#1e90ff';
+          ctx.lineWidth = 2;
+          this.drawRoundedRect(cx + 2, cy + 2, cardW - 4, cardH - 4, 4);
           ctx.stroke();
         }
       }
@@ -4145,6 +5302,76 @@ export default class GoGameScene {
     }
   }
 
+
+  drawTeleportPaths() {
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = this.board[row][col];
+        if (!this.isPiece(cell) || cell.type !== 'teleport') continue;
+        const targets = Array.isArray(cell.teleportTargets) ? cell.teleportTargets.slice(Math.max(0, Number(cell.teleportStep || 0))) : [];
+        if (targets.length === 0) continue;
+
+        let from = this.boardToScreen(row, col);
+        ctx.save();
+        ctx.strokeStyle = 'rgba(80, 170, 255, 0.9)';
+        ctx.lineWidth = Math.max(2, this.cellSize * 0.08);
+        ctx.setLineDash([8, 6]);
+        for (const target of targets) {
+          const to = this.boardToScreen(target.row, target.col);
+          ctx.beginPath();
+          ctx.moveTo(from.x, from.y);
+          ctx.lineTo(to.x, to.y);
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(to.x, to.y, Math.max(7, this.cellSize * 0.2), 0, Math.PI * 2);
+          ctx.stroke();
+          from = to;
+        }
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+    }
+  }
+
+  drawPendingTeleportTargetHint() {
+    const pending = this.pendingTeleportPlacement;
+    if (!pending) return;
+
+    const found = this.findPiecePositionById(pending.pieceId);
+    if (!found) return;
+
+    const points = [{ row: found.row, col: found.col }, ...(pending.targets || [])];
+    ctx.save();
+    ctx.strokeStyle = 'rgba(80, 170, 255, 0.95)';
+    ctx.lineWidth = Math.max(2, this.cellSize * 0.08);
+    ctx.setLineDash([8, 6]);
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = this.boardToScreen(points[i].row, points[i].col);
+      const b = this.boardToScreen(points[i + 1].row, points[i + 1].col);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+    for (let i = 1; i < points.length; i++) {
+      const p = this.boardToScreen(points[i].row, points[i].col);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, Math.max(7, this.cellSize * 0.2), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(80, 170, 255, 0.16)';
+      ctx.fill();
+    }
+    ctx.setLineDash([]);
+    const src = this.boardToScreen(found.row, found.col);
+    ctx.fillStyle = 'rgba(20, 60, 120, 0.9)';
+    ctx.font = `${Math.max(10, this.cellSize * 0.28)}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText((pending.targets || []).length === 0 ? '选第1点' : '选第2点', src.x, src.y - this.cellSize * 0.65);
+    ctx.restore();
+  }
+
   drawPendingFogTargetHint() {
     const pending = this.pendingFogPlacement;
     if (!pending) return;
@@ -4212,7 +5439,36 @@ export default class GoGameScene {
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
 
-    if (cell.color === BLACK) {
+    if (cell.type === 'yinyang') {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.fillStyle = '#111';
+      ctx.beginPath();
+      ctx.moveTo(x - r - 2, y - r - 2);
+      ctx.lineTo(x + r + 2, y - r - 2);
+      ctx.lineTo(x - r - 2, y + r + 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#f8f8f8';
+      ctx.beginPath();
+      ctx.moveTo(x + r + 2, y + r + 2);
+      ctx.lineTo(x + r + 2, y - r - 2);
+      ctx.lineTo(x - r - 2, y + r + 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      ctx.strokeStyle = '#5c5c5c';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(80, 170, 255, 0.85)';
+      ctx.lineWidth = Math.max(1.5, this.cellSize * 0.05);
+      ctx.beginPath();
+      ctx.moveTo(x - r * 0.82, y - r * 0.82);
+      ctx.lineTo(x + r * 0.82, y + r * 0.82);
+      ctx.stroke();
+    } else if (cell.color === BLACK) {
       ctx.fillStyle = '#111';
       ctx.fill();
     } else {
@@ -4223,7 +5479,7 @@ export default class GoGameScene {
       ctx.stroke();
     }
 
-    if (pieceDef.symbol) {
+    if (pieceDef.symbol && cell.type !== 'yinyang') {
       ctx.font = `${Math.max(14, this.cellSize * 0.42)}px Arial`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -4235,6 +5491,26 @@ export default class GoGameScene {
       }
     }
 
+    if (!isPreview && cell.infected) {
+      const alpha = 0.18 + (Math.sin(Date.now() / 220) + 1) * 0.12;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.arc(x, y, r * 1.12, 0, Math.PI * 2);
+      ctx.fillStyle = '#b7ff2a';
+      ctx.fill();
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalAlpha = Math.min(0.95, alpha + 0.22);
+      ctx.strokeStyle = 'rgba(196, 255, 60, 0.9)';
+      ctx.lineWidth = Math.max(2, this.cellSize * 0.08);
+      ctx.beginPath();
+      ctx.arc(x, y, r * 1.02, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     if (!isPreview && cell.sacrificePending) {
       const alpha = 0.45 + (Math.sin(Date.now() / 180) + 1) * 0.22;
       ctx.save();
@@ -4244,6 +5520,18 @@ export default class GoGameScene {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText('☠', x, y + 1);
+      ctx.restore();
+    }
+
+    if (!isPreview && this.pendingThiefPlacement && this.pendingThiefPlacement.sourceRow === row && this.pendingThiefPlacement.sourceCol === col) {
+      const alpha = 0.32 + (Math.sin(Date.now() / 180) + 1) * 0.16;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = '#4dd0e1';
+      ctx.lineWidth = Math.max(3, this.cellSize * 0.1);
+      ctx.beginPath();
+      ctx.arc(x, y, r * 1.18, 0, Math.PI * 2);
+      ctx.stroke();
       ctx.restore();
     }
 
@@ -4494,6 +5782,7 @@ export default class GoGameScene {
     const isEmpty = !card;
     const isUsed = !!card && card.used;
     const isActive = !!card && !isUsed && this.nextPieceType === card.type;
+    const isSwapOwnChosen = !!card && this.pendingSwapCardSelection && this.pendingSwapCardSelection.ownSlotIndex === slot.index;
 
     ctx.save();
 
@@ -4501,9 +5790,9 @@ export default class GoGameScene {
       ctx.globalAlpha = isUsed ? 0.2 : 0.35;
     }
 
-    ctx.fillStyle = isActive ? '#f7d794' : '#f3e5c8';
-    ctx.strokeStyle = isActive ? '#c0392b' : '#8e6e3b';
-    ctx.lineWidth = isActive ? 4 : 3;
+    ctx.fillStyle = (isActive || isSwapOwnChosen) ? '#f7d794' : '#f3e5c8';
+    ctx.strokeStyle = isSwapOwnChosen ? '#1e90ff' : (isActive ? '#c0392b' : '#8e6e3b');
+    ctx.lineWidth = (isActive || isSwapOwnChosen) ? 4 : 3;
 
     this.drawRoundedRect(slot.x, slot.y, slot.w, slot.h, 12);
     ctx.fill();
@@ -4544,6 +5833,10 @@ export default class GoGameScene {
       ctx.fillStyle = '#7f8c8d';
       ctx.font = 'bold 16px Arial';
       ctx.fillText('已使用', slot.x + slot.w / 2, slot.y + 112);
+    } else if (isSwapOwnChosen) {
+      ctx.fillStyle = '#1e90ff';
+      ctx.font = 'bold 16px Arial';
+      ctx.fillText('换牌目标', slot.x + slot.w / 2, slot.y + 112);
     } else if (isActive) {
       ctx.fillStyle = '#c0392b';
       ctx.font = 'bold 16px Arial';

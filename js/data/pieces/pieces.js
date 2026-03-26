@@ -74,6 +74,75 @@ module.exports = {
       behavior: { type: 'none' }
     },
 
+
+    {
+      id: 'plague',
+      name: '瘟疫',
+      symbol: '☣',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#6b8e23',
+      advanceOrder: 17,
+      behavior: { type: 'none' }
+    },
+    {
+      id: 'thief',
+      name: '盗贼',
+      symbol: '⌘',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#455a64',
+      advanceOrder: 17,
+      behavior: { type: 'none' }
+    },
+    {
+      id: 'swap_card',
+      name: '换牌',
+      symbol: '♤',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#1565c0',
+      advanceOrder: 17,
+      behavior: { type: 'none' }
+    },
+    {
+      id: 'time_limit',
+      name: '限时',
+      symbol: '⏱',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#8b0000',
+      advanceOrder: 19,
+      behavior: { type: 'none' }
+    },
+    {
+      id: 'teleport',
+      name: '瞬移',
+      symbol: '⚡',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#1e90ff',
+      advanceOrder: 18,
+      behavior: { type: 'none' }
+    },
+
+    {
+      id: 'yinyang',
+      name: '阴阳',
+      symbol: '☯',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#37474f',
+      advanceOrder: 18,
+      behavior: { type: 'none' }
+    },
+
     {
       id: 'sacrifice',
       name: '献祭',
