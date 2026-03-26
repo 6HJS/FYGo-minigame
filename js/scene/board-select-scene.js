@@ -45,6 +45,7 @@ export default class BoardSelectScene {
 
     this.boards = [square9, square13, square15, square17, square19, heart, dumbbell, poll, diamond, cross, butterfly, hourglass, ring, arrow, clover, crown, crescent, star, temple, doublemoon, trident, fan, gear, lantern, bridge, snowflake, anchor, iris, worldmap];
     this.currentIndex = 0;
+    this.niuCrossOpeningEnabled = false;
 
     this.initLayout();
   }
@@ -82,6 +83,13 @@ export default class BoardSelectScene {
       h: 60
     };
 
+    this.niuCrossToggleRect = {
+      x: 44,
+      y: SCREEN_HEIGHT - 154,
+      w: SCREEN_WIDTH - 88,
+      h: 42
+    };
+
     this.confirmBtn = {
       x: 40,
       y: SCREEN_HEIGHT - 96,
@@ -94,6 +102,9 @@ export default class BoardSelectScene {
     if (this.goGameScene && this.goGameScene.boardConfig) {
       const index = this.boards.findIndex((board) => board.id === this.goGameScene.boardConfig.id);
       if (index >= 0) this.currentIndex = index;
+    }
+    if (this.goGameScene) {
+      this.niuCrossOpeningEnabled = !!this.goGameScene.niuCrossOpeningEnabled;
     }
   }
 
@@ -110,9 +121,13 @@ export default class BoardSelectScene {
     const board = this.getCurrentBoard();
     if (this.goGameScene) {
       this.goGameScene.setBoardConfig(board);
+      this.goGameScene.setNiuCrossOpeningEnabled(this.niuCrossOpeningEnabled);
     }
     if (this.victorySelectScene) {
       this.victorySelectScene.setSelectedBoard(board);
+      if (this.victorySelectScene.setNiuCrossOpeningEnabled) {
+        this.victorySelectScene.setNiuCrossOpeningEnabled(this.niuCrossOpeningEnabled);
+      }
       this.sceneManager.switchTo(this.victorySelectScene);
     }
   }
@@ -134,6 +149,11 @@ export default class BoardSelectScene {
 
     if (inRect(x, y, this.rightArrowRect.x, this.rightArrowRect.y, this.rightArrowRect.w, this.rightArrowRect.h)) {
       this.moveSelection(1);
+      return;
+    }
+
+    if (inRect(x, y, this.niuCrossToggleRect.x, this.niuCrossToggleRect.y, this.niuCrossToggleRect.w, this.niuCrossToggleRect.h)) {
+      this.niuCrossOpeningEnabled = !this.niuCrossOpeningEnabled;
       return;
     }
 
@@ -205,6 +225,42 @@ export default class BoardSelectScene {
     ctx.restore();
   }
 
+
+  drawNiuCrossToggle() {
+    const rect = this.niuCrossToggleRect;
+    const boxSize = 24;
+    const boxX = rect.x + 8;
+    const boxY = rect.y + (rect.h - boxSize) / 2;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+
+    ctx.strokeStyle = '#d9c27a';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(boxX, boxY, boxSize, boxSize);
+
+    if (this.niuCrossOpeningEnabled) {
+      ctx.strokeStyle = '#36c66d';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(boxX + 5, boxY + 13);
+      ctx.lineTo(boxX + 10, boxY + 18);
+      ctx.lineTo(boxX + 19, boxY + 7);
+      ctx.stroke();
+    }
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#f5e6a9';
+    ctx.font = 'bold 19px Arial';
+    ctx.fillText('纽十字开场', boxX + boxSize + 12, rect.y + rect.h / 2 - 6);
+    ctx.fillStyle = '#c8ccd6';
+    ctx.font = '14px Arial';
+    ctx.fillText('开局自动在最宽阔处摆出黑白交错 2×2', boxX + boxSize + 12, rect.y + rect.h / 2 + 12);
+    ctx.restore();
+  }
+
   render() {
     const board = this.getCurrentBoard();
 
@@ -232,6 +288,7 @@ export default class BoardSelectScene {
     ctx.font = '16px Arial';
     ctx.fillText(`${this.currentIndex + 1} / ${this.boards.length}`, SCREEN_WIDTH / 2, this.previewRect.y + this.previewRect.h + 24);
 
+    this.drawNiuCrossToggle();
     drawButton(this.confirmBtn.x, this.confirmBtn.y, this.confirmBtn.w, this.confirmBtn.h, '#27ae60', '下一步', 24);
   }
 }

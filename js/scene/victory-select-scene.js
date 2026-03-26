@@ -23,6 +23,7 @@ export default class VictorySelectScene {
       { label: '先提10子获胜', captureTarget: 10, desc: '更耐玩，适合大一些的异形棋盘。' }
     ];
     this.selectedIndex = 2;
+    this.niuCrossOpeningEnabled = false;
 
     this.initLayout();
   }
@@ -76,6 +77,10 @@ export default class VictorySelectScene {
     this.boardConfig = board;
   }
 
+  setNiuCrossOpeningEnabled(enabled) {
+    this.niuCrossOpeningEnabled = !!enabled;
+  }
+
   getSelectedVictoryOption() {
     return this.victoryOptions[this.selectedIndex] || this.victoryOptions[0];
   }
@@ -91,11 +96,15 @@ export default class VictorySelectScene {
     if (this.goGameScene) {
       this.goGameScene.setBoardConfig(board);
       this.goGameScene.setVictoryCondition(condition);
+      this.goGameScene.setNiuCrossOpeningEnabled(this.niuCrossOpeningEnabled);
     }
 
     if (this.cardSelectScene) {
       this.cardSelectScene.setSelectedBoard(board);
       this.cardSelectScene.setVictoryCondition(condition);
+      if (this.cardSelectScene.setNiuCrossOpeningEnabled) {
+        this.cardSelectScene.setNiuCrossOpeningEnabled(this.niuCrossOpeningEnabled);
+      }
       this.sceneManager.switchTo(this.cardSelectScene);
     }
   }

@@ -24,6 +24,7 @@ export default class CardSelectScene {
     this.selectingColor = 'black';
     this.selectedBoard = null;
     this.victoryCondition = { type: 'capture', captureTarget: 5 };
+    this.niuCrossOpeningEnabled = false;
 
     this.scrollY = 0;
     this.maxScrollY = 0;
@@ -104,6 +105,10 @@ export default class CardSelectScene {
     this.selectedBoard = board;
   }
 
+  setNiuCrossOpeningEnabled(enabled) {
+    this.niuCrossOpeningEnabled = !!enabled;
+  }
+
   setVictoryCondition(condition) {
     this.victoryCondition = {
       type: 'capture',
@@ -145,7 +150,8 @@ export default class CardSelectScene {
       boardConfig: board,
       blackCardTypes: this.blackSelectedTypes,
       whiteCardTypes: this.whiteSelectedTypes,
-      victoryCondition: this.victoryCondition
+      victoryCondition: this.victoryCondition,
+      niuCrossOpeningEnabled: this.niuCrossOpeningEnabled
     });
     this.sceneManager.switchTo(this.goGameScene);
   }

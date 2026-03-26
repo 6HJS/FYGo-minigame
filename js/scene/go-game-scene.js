@@ -52,6 +52,7 @@ export default class GoGameScene {
     this.returnScene = null;
     this.pendingTutorialRebirthTimeout = null;
     this.victoryCondition = { type: 'capture', captureTarget: 0 };
+    this.niuCrossOpeningEnabled = false;
     this.captureCounts = { black: 0, white: 0 };
     this.komi = 6.5;
     this.scoreRequestState = null;
@@ -601,6 +602,10 @@ export default class GoGameScene {
     this.resetGame();
   }
 
+  setNiuCrossOpeningEnabled(enabled) {
+    this.niuCrossOpeningEnabled = !!enabled;
+  }
+
   setVictoryCondition(condition) {
     this.victoryCondition = {
       type: 'capture',
@@ -937,6 +942,7 @@ export default class GoGameScene {
       this.setVictoryCondition(options.victoryCondition);
     }
 
+    this.setNiuCrossOpeningEnabled(options.niuCrossOpeningEnabled);
     this.resetGame();
   }
 
@@ -974,6 +980,7 @@ export default class GoGameScene {
     };
     this.syncActivePlayerCardState();
     this.nextPieceId = 1;
+    this.applyOpeningNiuCrossIfNeeded();
     this.contractLinks = [];
     this.pendingContractPlacement = null;
     this.pendingRebirthPlacement = null;
@@ -985,6 +992,112 @@ export default class GoGameScene {
     this.calcBoardLayout();
     this.resetBoardViewTransform();
   }
+  applyOpeningNiuCrossIfNeeded() {
+    if (!this.niuCrossOpeningEnabled) return false;
+
+    const anchor = this.findBestNiuCrossAnchor();
+    if (!anchor) return false;
+
+    const { row, col } = anchor;
+    this.board[row][col] = createPiece(BLACK, 'normal', null, this.allocPieceId());
+    this.board[row][col + 1] = createPiece(WHITE, 'normal', null, this.allocPieceId());
+    this.board[row + 1][col] = createPiece(WHITE, 'normal', null, this.allocPieceId());
+    this.board[row + 1][col + 1] = createPiece(BLACK, 'normal', null, this.allocPieceId());
+    this.lastMove = null;
+    return true;
+  }
+
+  findBestNiuCrossAnchor() {
+    const distanceMap = this.buildEdgeDistanceMap();
+    let best = null;
+
+    for (let row = 0; row < BOARD_ROWS - 1; row++) {
+      for (let col = 0; col < BOARD_COLS - 1; col++) {
+        const cells = [
+          [row, col],
+          [row, col + 1],
+          [row + 1, col],
+          [row + 1, col + 1]
+        ];
+
+        let ok = true;
+        let sum = 0;
+        let minDist = Infinity;
+        for (const [r, c] of cells) {
+          if (!this.isPlayablePoint(r, c) || this.isPiece(this.board[r][c])) {
+            ok = false;
+            break;
+          }
+          const dist = distanceMap[r][c];
+          if (!Number.isFinite(dist)) {
+            ok = false;
+            break;
+          }
+          sum += dist;
+          if (dist < minDist) minDist = dist;
+        }
+        if (!ok) continue;
+
+        const centerRow = row + 0.5;
+        const centerCol = col + 0.5;
+        const bias = -(Math.abs(centerRow - (BOARD_ROWS - 1) / 2) + Math.abs(centerCol - (BOARD_COLS - 1) / 2));
+        const candidate = { row, col, score: sum / 4, minDist, bias };
+
+        if (!best
+          || candidate.score > best.score
+          || (candidate.score === best.score && candidate.minDist > best.minDist)
+          || (candidate.score === best.score && candidate.minDist === best.minDist && candidate.bias > best.bias)) {
+          best = candidate;
+        }
+      }
+    }
+
+    return best;
+  }
+
+  buildEdgeDistanceMap() {
+    const dist = Array.from({ length: BOARD_ROWS }, () => Array.from({ length: BOARD_COLS }, () => Infinity));
+    const queue = [];
+    let head = 0;
+
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        if (!this.isPlayablePoint(row, col)) continue;
+        if (this.isEdgePlayablePoint(row, col)) {
+          dist[row][col] = 0;
+          queue.push([row, col]);
+        }
+      }
+    }
+
+    const offsets = [[1,0],[-1,0],[0,1],[0,-1]];
+    while (head < queue.length) {
+      const [row, col] = queue[head++];
+      const nextDist = dist[row][col] + 1;
+      for (const [dr, dc] of offsets) {
+        const nr = row + dr;
+        const nc = col + dc;
+        if (!this.isPlayablePoint(nr, nc)) continue;
+        if (nextDist >= dist[nr][nc]) continue;
+        dist[nr][nc] = nextDist;
+        queue.push([nr, nc]);
+      }
+    }
+
+    return dist;
+  }
+
+  isEdgePlayablePoint(row, col) {
+    if (!this.isPlayablePoint(row, col)) return false;
+    const offsets = [[1,0],[-1,0],[0,1],[0,-1]];
+    for (const [dr, dc] of offsets) {
+      const nr = row + dr;
+      const nc = col + dc;
+      if (!this.isPlayablePoint(nr, nc)) return true;
+    }
+    return false;
+  }
+
   startLevel1() {
     this.resetGame();
     this.statusMessage = '进入教学关卡 1';
