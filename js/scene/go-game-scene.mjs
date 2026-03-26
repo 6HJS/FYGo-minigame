@@ -85,7 +85,7 @@ export default class GoGameScene {
     this.scoreRequestBtn = { x: (SCREEN_WIDTH - 100) / 2, y: this.row1Y, w: 100, h: 40 };
     this.restartBtn = { x: SCREEN_WIDTH - 24 - 100, y: this.row1Y, w: 100, h: 40 };
 
-    this.previewRowY = this.row1Y + 66;
+    this.previewRowY = this.row1Y + 90;
     this.previewRowH = 56;
     this.previewInfoGap = 12;
     this.previewInfoLineH = 22;
@@ -312,6 +312,7 @@ export default class GoGameScene {
     this.clearPendingPersuaderPlacement();
     this.clearPendingThiefPlacement();
     this.clearPendingTeleportPlacement();
+    this.clearPendingRelocatePlacement();
     this.clearPendingSwapCardSelection();
     this.contractLinks = [];
     this.fogState = null;
@@ -704,6 +705,7 @@ export default class GoGameScene {
     this.clearPendingPersuaderPlacement();
     this.clearPendingThiefPlacement();
     this.clearPendingTeleportPlacement();
+    this.clearPendingRelocatePlacement();
     this.clearPendingSwapCardSelection();
     this.pendingFogPlacement = null;
   }
@@ -1176,6 +1178,7 @@ export default class GoGameScene {
     this.clearPendingPersuaderPlacement();
     this.clearPendingThiefPlacement();
     this.clearPendingTeleportPlacement();
+    this.clearPendingRelocatePlacement();
     this.clearPendingSwapCardSelection();
     this.pendingFogPlacement = null;
     this.pendingPlacement = null;
@@ -1198,6 +1201,7 @@ export default class GoGameScene {
     this.clearPendingContractPlacement();
     this.clearPendingSacrificePlacement();
     this.clearPendingTeleportPlacement();
+    this.clearPendingRelocatePlacement();
     this.clearPendingSwapCardSelection();
   }
 
@@ -1271,6 +1275,9 @@ export default class GoGameScene {
     this.pendingSacrificePlacement = null;
     this.pendingThiefPlacement = null;
     this.pendingTeleportPlacement = null;
+    this.pendingNightmarePlacement = null;
+    this.nightmareDirectionButtons = null;
+    this.pendingRelocatePlacement = null;
     this.pendingSwapCardSelection = null;
     this.fogState = null;
     this.lastPlagueResolution = null;
@@ -1548,6 +1555,9 @@ export default class GoGameScene {
   refreshPendingBoardAnchors() {
     if (this.pendingPlacement) {
       this.directionButtons = this.buildDirectionButtons(this.pendingPlacement.row, this.pendingPlacement.col);
+    }
+    if (this.pendingNightmarePlacement && this.pendingNightmarePlacement.targetRow != null && this.pendingNightmarePlacement.targetCol != null) {
+      this.nightmareDirectionButtons = this.buildDirectionButtons(this.pendingNightmarePlacement.targetRow, this.pendingNightmarePlacement.targetCol);
     }
   }
 
@@ -1970,6 +1980,15 @@ export default class GoGameScene {
     this.pendingTeleportPlacement = null;
   }
 
+  clearPendingNightmarePlacement() {
+    this.pendingNightmarePlacement = null;
+    this.nightmareDirectionButtons = null;
+  }
+
+  clearPendingRelocatePlacement() {
+    this.pendingRelocatePlacement = null;
+  }
+
   cancelPendingFogPlacement() {
     const pending = this.pendingFogPlacement;
     if (!pending) return false;
@@ -2015,6 +2034,31 @@ export default class GoGameScene {
     return true;
   }
 
+  cancelPendingNightmarePlacement() {
+    const pending = this.pendingNightmarePlacement;
+    if (!pending) return false;
+
+    this.removePieceById(pending.pieceId);
+    this.refundCard('nightmare');
+    this.clearPendingNightmarePlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.previousBoardKey = this.getBoardKey(this.board);
+    this.lastMove = null;
+    this.lastCaptured = [];
+    this.statusMessage = '已取消梦魇落子';
+    return true;
+  }
+
+  cancelPendingRelocatePlacement() {
+    const pending = this.pendingRelocatePlacement;
+    if (!pending) return false;
+
+    this.clearPendingRelocatePlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.statusMessage = '已取消挪移操作';
+    return true;
+  }
+
   cancelPendingThiefPlacement() {
     const pending = this.pendingThiefPlacement;
     if (!pending) return false;
@@ -2023,6 +2067,375 @@ export default class GoGameScene {
     this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
     this.statusMessage = '已取消盗贼操作';
     return true;
+  }
+
+
+  startNightmarePlacement(row, col) {
+    if (!this.isPlayablePoint(row, col) || this.board[row][col] !== EMPTY) {
+      this.statusMessage = '梦魇必须落在有效空位';
+      return false;
+    }
+
+    if (!this.hasAvailableCard('nightmare')) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = '这张卡已经用掉了';
+      return false;
+    }
+
+    const pieceId = this.allocPieceId();
+    this.board[row][col] = createPiece(this.currentPlayer, 'nightmare', null, pieceId);
+    this.consumeCard('nightmare');
+    this.pendingNightmarePlacement = {
+      row,
+      col,
+      color: this.currentPlayer,
+      pieceId,
+      targetRow: null,
+      targetCol: null,
+      targetId: null
+    };
+    this.nightmareDirectionButtons = null;
+    this.lastMove = { row, col };
+    this.lastCaptured = [];
+    this.previousBoardKey = this.getBoardKey(this.board);
+    this.nextPieceType = 'nightmare';
+    this.statusMessage = '梦魇已落子：请选择任意一枚敌方棋子';
+    return true;
+  }
+
+  selectNightmareTarget(row, col) {
+    const pending = this.pendingNightmarePlacement;
+    if (!pending) return false;
+
+    const target = this.isPlayablePoint(row, col) ? this.board[row][col] : null;
+    if (!this.isPiece(target) || target.color !== this.getOpponent(pending.color)) {
+      this.statusMessage = '请选择任意一枚敌方棋子';
+      return false;
+    }
+
+    pending.targetRow = row;
+    pending.targetCol = col;
+    pending.targetId = target.id || null;
+    this.nightmareDirectionButtons = this.buildDirectionButtons(row, col);
+    this.statusMessage = '请选择梦魇推进方向';
+    return true;
+  }
+
+  bindPendingNightmareDirection(dir) {
+    const pending = this.pendingNightmarePlacement;
+    if (!pending) return false;
+
+    let row = pending.targetRow;
+    let col = pending.targetCol;
+    let target = row != null && col != null && this.isInside(row, col) ? this.board[row][col] : null;
+
+    if ((!this.isPiece(target) || target.color !== this.getOpponent(pending.color)) && pending.targetId) {
+      const found = this.findPiecePositionById(pending.targetId);
+      if (found && this.isPiece(found.cell) && found.cell.color === this.getOpponent(pending.color)) {
+        row = found.row;
+        col = found.col;
+        target = found.cell;
+      }
+    }
+
+    if (!this.isPiece(target) || target.color !== this.getOpponent(pending.color)) {
+      this.clearPendingNightmarePlacement();
+      this.statusMessage = '目标棋子已不存在';
+      return false;
+    }
+
+    const source = this.findPiecePositionById(pending.pieceId);
+    if (!source || !this.isPiece(source.cell) || source.cell.color !== pending.color) {
+      this.clearPendingNightmarePlacement();
+      this.statusMessage = '梦魇子已不存在';
+      return false;
+    }
+
+    this.board[row][col] = createPiece(target.color, target.type, target.dir, target.id, {
+      ...target,
+      nightmareDir: dir,
+      nightmareActive: true,
+      nightmareOwnerColor: pending.color,
+      nightmareSourceId: pending.pieceId
+    });
+
+    this.normalizePieceAt(source.row, source.col);
+    this.clearPendingNightmarePlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
+    this.previousBoardKey = this.getBoardKey(this.board);
+
+    const turnStartInfo = this.resolveTurnStartSpecials(this.currentPlayer);
+    if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
+      this.clearFog();
+    }
+
+    if (turnStartInfo.nightmareInfo && turnStartInfo.nightmareInfo.movedCount > 0) {
+      this.statusMessage = `梦魇已附身并开始推进，同时本回合已有 ${turnStartInfo.nightmareInfo.movedCount} 枚梦魇目标移动`;
+    } else {
+      this.statusMessage = `梦魇已附身：目标将沿${dir === 'U' ? '上' : dir === 'D' ? '下' : dir === 'L' ? '左' : '右'}方向每回合移动一格，直到受阻`;
+    }
+
+    return true;
+  }
+
+  resolveNightmareMoves() {
+    let movedCount = 0;
+    let stoppedCount = 0;
+    const queue = [];
+
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = this.board[row][col];
+        if (!this.isPiece(cell) || !cell.nightmareActive || !cell.nightmareDir) continue;
+        queue.push({ row, col, id: cell.id });
+      }
+    }
+
+    for (const item of queue) {
+      const live = this.board[item.row] ? this.board[item.row][item.col] : null;
+      if (!this.isPiece(live) || live.id !== item.id || !live.nightmareActive || !live.nightmareDir) continue;
+
+      const move = this.DIRS[live.nightmareDir];
+      if (!move) {
+        this.board[item.row][item.col] = createPiece(live.color, live.type, live.dir, live.id, {
+          ...live,
+          nightmareActive: false,
+          nightmareDir: null,
+          nightmareOwnerColor: undefined,
+          nightmareSourceId: undefined
+        });
+        stoppedCount += 1;
+        continue;
+      }
+
+      const nr = item.row + move.dr;
+      const nc = item.col + move.dc;
+      if (!this.isPlayablePoint(nr, nc) || this.board[nr][nc] !== EMPTY) {
+        this.board[item.row][item.col] = createPiece(live.color, live.type, live.dir, live.id, {
+          ...live,
+          nightmareActive: false,
+          nightmareDir: null,
+          nightmareOwnerColor: undefined,
+          nightmareSourceId: undefined
+        });
+        stoppedCount += 1;
+        continue;
+      }
+
+      this.board[nr][nc] = createPiece(live.color, live.type, live.dir, live.id, {
+        ...live,
+        nightmareActive: true,
+        nightmareDir: live.nightmareDir
+      });
+      this.board[item.row][item.col] = EMPTY;
+      movedCount += 1;
+    }
+
+    this.previousBoardKey = this.getBoardKey(this.board);
+    return { movedCount, stoppedCount };
+  }
+
+  getRelocateAreaAnchor(row, col) {
+    if (!this.isInside(row, col)) return null;
+    return {
+      row: Math.max(0, Math.min(row, BOARD_ROWS - 2)),
+      col: Math.max(0, Math.min(col, BOARD_COLS - 2))
+    };
+  }
+
+  buildRelocateAreaCells(anchor) {
+    if (!anchor) return [];
+    const cells = [];
+    for (let dr = 0; dr < 2; dr++) {
+      for (let dc = 0; dc < 2; dc++) {
+        const row = anchor.row + dr;
+        const col = anchor.col + dc;
+        if (!this.isInside(row, col)) return [];
+        cells.push({ row, col });
+      }
+    }
+    return cells;
+  }
+
+  isSameRelocateArea(a, b) {
+    return !!a && !!b && a.row === b.row && a.col === b.col;
+  }
+
+  doRelocateAreasOverlap(a, b) {
+    if (!a || !b) return false;
+    return !(a.row + 1 < b.row || b.row + 1 < a.row || a.col + 1 < b.col || b.col + 1 < a.col);
+  }
+
+  startRelocateSelection() {
+    if (!this.hasAvailableCard('relocate')) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = '这张卡已经用掉了';
+      return false;
+    }
+
+    this.pendingRelocatePlacement = {
+      stage: 'first_select',
+      firstArea: null,
+      secondArea: null,
+      firstConfirmBtn: null,
+      secondConfirmBtn: null
+    };
+    this.nextPieceType = 'relocate';
+    this.statusMessage = '请选择第 1 块 2x2 区域，点右上角绿箭头确认';
+    return true;
+  }
+
+  selectRelocateArea(row, col) {
+    const pending = this.pendingRelocatePlacement;
+    if (!pending) return false;
+
+    const anchor = this.getRelocateAreaAnchor(row, col);
+    const cells = this.buildRelocateAreaCells(anchor);
+    if (cells.length !== 4) {
+      this.statusMessage = '该位置无法形成 2x2 区域';
+      return false;
+    }
+
+    if (pending.stage === 'first_select') {
+      pending.firstArea = anchor;
+      pending.firstConfirmBtn = null;
+      this.statusMessage = '已预览第 1 块 2x2 区域，点击绿箭头确认';
+      return true;
+    }
+
+    if (pending.stage === 'second_select') {
+      if (this.isSameRelocateArea(anchor, pending.firstArea)) {
+        this.statusMessage = '第二块区域不能与第一块相同';
+        return false;
+      }
+      if (this.doRelocateAreasOverlap(anchor, pending.firstArea)) {
+        this.statusMessage = '两块 2x2 区域不能重叠';
+        return false;
+      }
+      pending.secondArea = anchor;
+      pending.secondConfirmBtn = null;
+      this.statusMessage = '已预览第 2 块 2x2 区域，点击绿箭头确认互换';
+      return true;
+    }
+
+    return false;
+  }
+
+  confirmRelocateArea(which = 'first') {
+    const pending = this.pendingRelocatePlacement;
+    if (!pending) return false;
+
+    if (which === 'first') {
+      if (!pending.firstArea) {
+        this.statusMessage = '请先框选第一块 2x2 区域';
+        return false;
+      }
+      pending.stage = 'second_select';
+      this.statusMessage = '第一块区域已确认，请选择第 2 块 2x2 区域';
+      return true;
+    }
+
+    if (!pending.firstArea || !pending.secondArea) {
+      this.statusMessage = '请先框选第二块 2x2 区域';
+      return false;
+    }
+
+    return this.commitRelocateAreas(pending.firstArea, pending.secondArea);
+  }
+
+  commitRelocateAreas(firstArea, secondArea) {
+    const firstCells = this.buildRelocateAreaCells(firstArea);
+    const secondCells = this.buildRelocateAreaCells(secondArea);
+    if (firstCells.length !== 4 || secondCells.length !== 4) {
+      this.statusMessage = '挪移区域无效';
+      return false;
+    }
+    if (this.doRelocateAreasOverlap(firstArea, secondArea)) {
+      this.statusMessage = '两块 2x2 区域不能重叠';
+      return false;
+    }
+
+    const temp = firstCells.map(({ row, col }) => this.board[row][col] === EMPTY ? EMPTY : (this.board[row][col] === INVALID || this.board[row][col] === DESTROYED ? this.board[row][col] : { ...this.board[row][col] }));
+    for (let i = 0; i < 4; i++) {
+      const a = firstCells[i];
+      const b = secondCells[i];
+      const srcB = this.board[b.row][b.col];
+      this.board[a.row][a.col] = srcB === EMPTY ? EMPTY : (srcB === INVALID || srcB === DESTROYED ? srcB : { ...srcB });
+    }
+    for (let i = 0; i < 4; i++) {
+      const b = secondCells[i];
+      const srcA = temp[i];
+      this.board[b.row][b.col] = srcA === EMPTY ? EMPTY : (srcA === INVALID || srcA === DESTROYED ? srcA : { ...srcA });
+    }
+
+    this.resolveRelocateBoardState();
+    this.consumeCard('relocate');
+    this.clearPendingRelocatePlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+
+    const wonByCapture = this.checkVictoryAfterCapture(this.currentPlayer) || this.checkVictoryAfterCapture(this.getOpponent(this.currentPlayer));
+
+    if (!wonByCapture) {
+      this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
+    }
+
+    const turnStartInfo = wonByCapture
+      ? { persuadedCount: 0, vanishedCount: 0, archerShotCount: 0, archerKillCount: 0, archerDisabledCount: 0, plagueInfo: { infectedCount: 0, deathCount: 0, recoverCount: 0, vanishedCount: 0 }, teleportInfo: { movedCount: 0, failedCount: 0, finishedCount: 0 } }
+      : this.resolveTurnStartSpecials(this.currentPlayer);
+
+    if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
+      this.clearFog();
+    }
+
+    if (wonByCapture) {
+      return true;
+    }
+
+    if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.failedCount > 0) {
+      this.statusMessage = `挪移完成，同时有 ${turnStartInfo.teleportInfo.failedCount} 枚瞬移子受阻失效`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.movedCount > 0) {
+      this.statusMessage = `挪移完成，同时有 ${turnStartInfo.teleportInfo.movedCount} 枚瞬移子完成跳跃`;
+    } else if (turnStartInfo.plagueInfo && (turnStartInfo.plagueInfo.deathCount > 0 || turnStartInfo.plagueInfo.recoverCount > 0)) {
+      this.statusMessage = `挪移完成；瘟疫结算：病死 ${turnStartInfo.plagueInfo.deathCount} 枚，康复 ${turnStartInfo.plagueInfo.recoverCount} 枚`;
+    } else if (turnStartInfo.archerDisabledCount > 0) {
+      this.statusMessage = `挪移完成，同时有 ${turnStartInfo.archerDisabledCount} 枚弓箭手被敌子贴身，失去射箭能力`;
+    } else if (turnStartInfo.archerShotCount > 0) {
+      this.statusMessage = turnStartInfo.archerKillCount > 0
+        ? `挪移完成，同时弓箭手放箭击杀 ${turnStartInfo.archerKillCount} 枚`
+        : '挪移完成，同时弓箭手放箭但前方没有目标';
+    } else {
+      this.statusMessage = '挪移完成：两个 2x2 区域已互换';
+    }
+
+    return true;
+  }
+
+  resolveRelocateBoardState() {
+    let loopGuard = 0;
+    while (loopGuard < 24) {
+      loopGuard += 1;
+      let changed = false;
+
+      for (let row = 0; row < BOARD_ROWS; row++) {
+        for (let col = 0; col < BOARD_COLS; col++) {
+          const cell = this.board[row][col];
+          if (!this.isYinYangPiece(cell)) continue;
+          const targetColor = this.resolveYinYangTransformTarget(this.board, row, col);
+          if (!targetColor) continue;
+          this.board[row][col] = createPiece(targetColor, 'normal', null, cell.id);
+          changed = true;
+        }
+      }
+
+      const vanished = this.resolveDeadGroupsAfterGravity(null, true);
+      if (vanished > 0) changed = true;
+      if (!changed) break;
+    }
+
+    this.previousBoardKey = this.getBoardKey(this.board);
+    this.lastMove = null;
+    this.lastCaptured = [];
   }
 
   hasAdjacentEnemy(row, col, player) {
@@ -2915,6 +3328,7 @@ export default class GoGameScene {
     let archerShotCount = 0;
     let archerKillCount = 0;
     let archerDisabledCount = 0;
+    const nightmareInfo = this.resolveNightmareMoves();
     const teleportInfo = this.resolveTeleportMoves();
     const plagueInfo = this.resolvePlagueInfections();
 
@@ -2950,7 +3364,7 @@ export default class GoGameScene {
       vanishedCount += (stabilizeOut.counted || []).length;
     }
     this.previousBoardKey = this.getBoardKey(this.board);
-    return { persuadedCount, vanishedCount, archerShotCount, archerKillCount, archerDisabledCount, plagueInfo, teleportInfo };
+    return { persuadedCount, vanishedCount, archerShotCount, archerKillCount, archerDisabledCount, plagueInfo, teleportInfo, nightmareInfo };
   }
 
 
@@ -3165,6 +3579,11 @@ export default class GoGameScene {
         return;
       }
 
+      if (this.pendingRelocatePlacement) {
+        this.cancelPendingRelocatePlacement();
+        return;
+      }
+
       if (this.pendingSacrificePlacement) {
         this.statusMessage = '献祭已经发动，必须先指定一枚敌子';
         return;
@@ -3274,6 +3693,45 @@ export default class GoGameScene {
       return;
     }
 
+    if (this.pendingNightmarePlacement) {
+      const dir = this.hitCustomDirectionButton(x, y, this.nightmareDirectionButtons);
+      if (dir) {
+        this.bindPendingNightmareDirection(dir);
+        return;
+      }
+      const point = this.screenToBoard(x, y);
+      if (!point) {
+        this.statusMessage = this.nightmareDirectionButtons ? '请选择一个方向三角，或点下方卡牌取消' : '请选择任意一枚敌方棋子，或点下方卡牌取消';
+        return;
+      }
+      this.selectNightmareTarget(point.row, point.col);
+      return;
+    }
+
+    if (this.pendingRelocatePlacement) {
+      const pending = this.pendingRelocatePlacement;
+      const hitFirst = pending.firstConfirmBtn && inRect(x, y, pending.firstConfirmBtn.x, pending.firstConfirmBtn.y, pending.firstConfirmBtn.w, pending.firstConfirmBtn.h);
+      const hitSecond = pending.secondConfirmBtn && inRect(x, y, pending.secondConfirmBtn.x, pending.secondConfirmBtn.y, pending.secondConfirmBtn.w, pending.secondConfirmBtn.h);
+      if (hitFirst) {
+        this.confirmRelocateArea('first');
+        return;
+      }
+      if (hitSecond) {
+        this.confirmRelocateArea('second');
+        return;
+      }
+
+      const point = this.screenToBoard(x, y);
+      if (!point) {
+        this.statusMessage = pending.stage === 'first_select'
+          ? '请选择第 1 块 2x2 区域，或点下方卡牌取消'
+          : '请选择第 2 块 2x2 区域，或点下方卡牌取消';
+        return;
+      }
+      this.selectRelocateArea(point.row, point.col);
+      return;
+    }
+
     if (this.pendingPlacement && this.directionButtons) {
       const dir = this.hitDirectionButton(x, y);
       if (dir) {
@@ -3327,6 +3785,17 @@ export default class GoGameScene {
 
     if (this.nextPieceType === 'swap_card') {
       this.startSwapCardSelection();
+      return;
+    }
+
+    if (this.nextPieceType === 'relocate') {
+      this.startRelocateSelection();
+      this.selectRelocateArea(point.row, point.col);
+      return;
+    }
+
+    if (this.nextPieceType === 'nightmare') {
+      this.startNightmarePlacement(point.row, point.col);
       return;
     }
 
@@ -3445,6 +3914,16 @@ export default class GoGameScene {
 
     if (type === 'swap_card' && this.nextPieceType === type) {
       this.statusMessage = `已选中${pieceDef.name}卡：先选自己一张手牌，再点对方手牌完成交换`;
+      return;
+    }
+
+    if (type === 'relocate' && this.nextPieceType === type) {
+      this.statusMessage = `已选中${pieceDef.name}卡：依次确认两块 2x2 区域后互换`;
+      return;
+    }
+
+    if (type === 'nightmare' && this.nextPieceType === type) {
+      this.statusMessage = `已选中${pieceDef.name}卡：先落子，再选敌子与推进方向`;
       return;
     }
 
@@ -4655,9 +5134,14 @@ export default class GoGameScene {
   }
 
   hitDirectionButton(x, y) {
-    if (!this.directionButtons) return null;
+    return this.hitCustomDirectionButton(x, y, this.directionButtons);
+  }
+
+  hitCustomDirectionButton(x, y, buttons) {
+    if (!buttons) return null;
     for (const dir of ['U', 'D', 'L', 'R']) {
-      const btn = this.directionButtons[dir];
+      const btn = buttons[dir];
+      if (!btn) continue;
       const dx = x - btn.x;
       const dy = y - btn.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
@@ -4711,6 +5195,7 @@ export default class GoGameScene {
     this.clearPendingPersuaderPlacement();
     this.clearPendingThiefPlacement();
     this.clearPendingTeleportPlacement();
+    this.clearPendingRelocatePlacement();
     this.clearPendingSwapCardSelection();
     this.pendingFogPlacement = null;
     this.pendingPlacement = null;
@@ -4813,6 +5298,7 @@ export default class GoGameScene {
     this.clearPendingPersuaderPlacement();
     this.clearPendingThiefPlacement();
     this.clearPendingTeleportPlacement();
+    this.clearPendingRelocatePlacement();
     this.clearPendingSwapCardSelection();
     this.pendingFogPlacement = null;
     this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
@@ -4933,7 +5419,9 @@ export default class GoGameScene {
     this.drawContracts();
     this.drawTeleportPaths();
     this.drawPendingTeleportTargetHint();
+    this.drawPendingNightmareTargetHint();
     this.drawPendingFogTargetHint();
+    this.drawPendingRelocateAreas();
     this.drawFogOverlay();
     this.drawPendingConfirmPlacement();
     this.drawPendingPlacement();
@@ -4962,11 +5450,6 @@ export default class GoGameScene {
       drawButton(this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h, '#27ae60', '重开');
     }
 
-    ctx.fillStyle = '#1f1f1f';
-    ctx.font = 'bold 28px Arial';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(this.boardConfig.name || '棋盘', SCREEN_WIDTH / 2, this.titleY);
 
     ctx.font = '16px Arial';
     ctx.fillStyle = '#5b3a1f';
@@ -5038,7 +5521,7 @@ export default class GoGameScene {
       ctx.restore();
     }
 
-    this.drawMiniTurnStone(sideColor, x + w / 2, y - 12, isCurrentTurn);
+    this.drawMiniTurnStone(sideColor, x + w / 2, y - 25, isCurrentTurn);
 
     const timer = this.turnTimers ? this.formatTimer(this.turnTimers[sideKey]) : '05:00';
     const captures = this.captureCounts ? this.captureCounts[sideKey] : 0;
@@ -5048,9 +5531,9 @@ export default class GoGameScene {
     ctx.font = 'bold 20px Arial';
     ctx.fillText(String(captures), x + w / 2, y + h + this.previewInfoGap + this.previewInfoLineH);
     ctx.font = 'bold 16px Arial';
-    ctx.fillText('倒计时', x + w / 2, y + h + this.previewInfoGap + this.previewInfoLineH * 2 + 2);
+    ctx.fillText('倒计时', x + w / 2, y + h + this.previewInfoGap + this.previewInfoLineH * 2 + 12);
     ctx.font = 'bold 20px Arial';
-    ctx.fillText(timer, x + w / 2, y + h + this.previewInfoGap + this.previewInfoLineH * 3);
+    ctx.fillText(timer, x + w / 2, y + h + this.previewInfoGap + this.previewInfoLineH * 3 + 10);
 
     ctx.restore();
   }
@@ -5355,6 +5838,98 @@ export default class GoGameScene {
     }
   }
 
+  drawPendingRelocateAreas() {
+    const pending = this.pendingRelocatePlacement;
+    if (!pending) return;
+
+    const pulse = 0.3 + (Math.sin(Date.now() / 180) + 1) * 0.18;
+    pending.firstConfirmBtn = null;
+    pending.secondConfirmBtn = null;
+
+    if (pending.firstArea) {
+      pending.firstConfirmBtn = this.drawRelocateAreaOverlay(pending.firstArea, {
+        color: 'rgba(255, 140, 0, 0.95)',
+        fill: `rgba(255, 165, 0, ${pulse})`,
+        label: pending.stage === 'first_select' ? '区域1' : '已确认1',
+        showConfirm: pending.stage === 'first_select'
+      });
+    }
+
+    if (pending.secondArea) {
+      pending.secondConfirmBtn = this.drawRelocateAreaOverlay(pending.secondArea, {
+        color: 'rgba(60, 140, 255, 0.98)',
+        fill: `rgba(64, 156, 255, ${pulse})`,
+        label: '区域2',
+        showConfirm: pending.stage === 'second_select'
+      });
+    }
+  }
+
+  drawRelocateAreaOverlay(anchor, options = {}) {
+    const cells = this.buildRelocateAreaCells(anchor);
+    if (cells.length !== 4) return null;
+
+    const xs = [];
+    const ys = [];
+    for (const cell of cells) {
+      const p = this.boardToScreen(cell.row, cell.col);
+      xs.push(p.x);
+      ys.push(p.y);
+    }
+
+    const left = Math.min(...xs) - this.cellSize * 0.5;
+    const right = Math.max(...xs) + this.cellSize * 0.5;
+    const top = Math.min(...ys) - this.cellSize * 0.5;
+    const bottom = Math.max(...ys) + this.cellSize * 0.5;
+
+    ctx.save();
+    ctx.fillStyle = options.fill || 'rgba(255,165,0,0.25)';
+    ctx.strokeStyle = options.color || 'rgba(255,140,0,0.95)';
+    ctx.lineWidth = Math.max(3, this.cellSize * 0.1);
+    ctx.fillRect(left, top, right - left, bottom - top);
+    ctx.strokeRect(left, top, right - left, bottom - top);
+
+    if (options.label) {
+      ctx.fillStyle = options.color || '#ff8c00';
+      ctx.font = `bold ${Math.max(10, this.cellSize * 0.26)}px Arial`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(options.label, left + 4, top - 4);
+    }
+    ctx.restore();
+
+    if (!options.showConfirm) return null;
+
+    const btnSize = Math.max(22, this.cellSize * 0.5);
+    const btn = {
+      x: right - btnSize * 0.5,
+      y: top - btnSize * 0.6,
+      w: btnSize,
+      h: btnSize
+    };
+    const hitBtn = {
+      x: btn.x - Math.max(8, btnSize * 0.2),
+      y: btn.y - Math.max(8, btnSize * 0.2),
+      w: btn.w + Math.max(16, btnSize * 0.4),
+      h: btn.h + Math.max(16, btnSize * 0.4)
+    };
+
+    ctx.save();
+    ctx.fillStyle = '#2ecc71';
+    ctx.strokeStyle = '#145a32';
+    ctx.lineWidth = 2;
+    ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+    ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.max(12, btnSize * 0.62)}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('✓', btn.x + btn.w / 2, btn.y + btn.h / 2 + 1);
+    ctx.restore();
+
+    return hitBtn;
+  }
+
   drawPendingTeleportTargetHint() {
     const pending = this.pendingTeleportPlacement;
     if (!pending) return;
@@ -5391,6 +5966,42 @@ export default class GoGameScene {
     ctx.textBaseline = 'middle';
     ctx.fillText((pending.targets || []).length === 0 ? '选第1点' : '选第2点', src.x, src.y - this.cellSize * 0.65);
     ctx.restore();
+  }
+
+  drawPendingNightmareTargetHint() {
+    const pending = this.pendingNightmarePlacement;
+    if (!pending) return;
+    if (pending.targetRow == null || pending.targetCol == null) return;
+
+    let row = pending.targetRow;
+    let col = pending.targetCol;
+    const found = pending.targetId ? this.findPiecePositionById(pending.targetId) : null;
+    if (found && this.isPiece(found.cell)) {
+      row = found.row;
+      col = found.col;
+      pending.targetRow = row;
+      pending.targetCol = col;
+    }
+
+    this.nightmareDirectionButtons = this.buildDirectionButtons(row, col);
+    const center = this.boardToScreen(row, col);
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(150, 50, 220, 0.95)';
+    ctx.lineWidth = Math.max(2, this.cellSize * 0.08);
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, Math.max(12, this.cellSize * 0.5), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(90, 20, 140, 0.9)';
+    ctx.font = `${Math.max(10, this.cellSize * 0.28)}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('选方向', center.x, center.y - this.cellSize * 0.72);
+    ctx.restore();
+
+    this.drawDirectionButtonsSet(this.nightmareDirectionButtons, 'rgba(150, 50, 220, 0.9)');
   }
 
   drawPendingFogTargetHint() {
@@ -5504,6 +6115,25 @@ export default class GoGameScene {
       if (pieceDef.needsDirection) {
         this.drawDirectionMarker(x, y, r, cell.dir, cell.color);
       }
+    }
+
+    if (!isPreview && cell.nightmareActive) {
+      const alpha = 0.18 + (Math.sin(Date.now() / 180) + 1) * 0.16;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.arc(x, y, r * 1.16, 0, Math.PI * 2);
+      ctx.fillStyle = '#b266ff';
+      ctx.fill();
+      ctx.restore();
+
+      ctx.save();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `bold ${Math.max(12, this.cellSize * 0.3)}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('ᶻ', x, y - r * 0.95);
+      ctx.restore();
     }
 
     if (!isPreview && cell.infected) {
@@ -5682,14 +6312,19 @@ export default class GoGameScene {
   }
 
   drawDirectionButtons() {
-    if (!this.directionButtons) return;
+    this.drawDirectionButtonsSet(this.directionButtons);
+  }
+
+  drawDirectionButtonsSet(buttons, fillStyle = 'rgba(52, 152, 219, 0.9)') {
+    if (!buttons) return;
     for (const dir of ['U', 'D', 'L', 'R']) {
-      const btn = this.directionButtons[dir];
-      this.drawTriangleButton(btn.x, btn.y, btn.size, dir);
+      const btn = buttons[dir];
+      if (!btn) continue;
+      this.drawTriangleButton(btn.x, btn.y, btn.size, dir, fillStyle);
     }
   }
 
-  drawTriangleButton(x, y, size, dir) {
+  drawTriangleButton(x, y, size, dir, fillStyle = 'rgba(52, 152, 219, 0.9)') {
     ctx.save();
     ctx.beginPath();
 
@@ -5712,7 +6347,7 @@ export default class GoGameScene {
     }
 
     ctx.closePath();
-    ctx.fillStyle = 'rgba(52, 152, 219, 0.9)';
+    ctx.fillStyle = fillStyle;
     ctx.fill();
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 2;

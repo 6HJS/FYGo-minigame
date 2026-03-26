@@ -109,6 +109,28 @@ module.exports = {
       behavior: { type: 'none' }
     },
     {
+      id: 'relocate',
+      name: '挪移',
+      symbol: '↔',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#27ae60',
+      advanceOrder: 17,
+      behavior: { type: 'none' }
+    },
+    {
+      id: 'nightmare',
+      name: '梦魇',
+      symbol: 'ᶻᶻ',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#6a1b9a',
+      advanceOrder: 17,
+      behavior: { type: 'none' }
+    },
+    {
       id: 'time_limit',
       name: '限时',
       symbol: '⏱',
