@@ -135,28 +135,62 @@ export default class GoGameScene {
 
   buildVictoryDialogLayout() {
     const w = Math.min(SCREEN_WIDTH - 56, 360);
-    const hasScoreReview = !!this.scoreSummary;
-    const h = hasScoreReview ? 278 : 220;
+    const hasScoreReview = !!(this.victoryDialog && this.victoryDialog.reviewText);
+    const messageLines = this.wrapDialogText(this.victoryDialog && this.victoryDialog.message ? this.victoryDialog.message : '', 9);
+    const detailLines = this.wrapDialogText(this.victoryDialog && this.victoryDialog.detail ? this.victoryDialog.detail : '', 16);
+    const topPadding = 32;
+    const titleH = 28;
+    const messageH = Math.max(1, messageLines.length) * 40;
+    const detailGap = detailLines.length > 0 ? 12 : 0;
+    const detailH = detailLines.length * 24;
+    const btnGap = hasScoreReview ? 12 : 0;
+    const buttonsH = hasScoreReview ? 104 : 46;
+    const bottomPadding = 26;
+    const h = Math.max(hasScoreReview ? 278 : 236, topPadding + titleH + 26 + messageH + detailGap + detailH + 24 + buttonsH + bottomPadding);
     const x = (SCREEN_WIDTH - w) / 2;
     const y = (SCREEN_HEIGHT - h) / 2 - 12;
+    const confirmBtnY = y + h - bottomPadding - buttonsH;
     return {
       x,
       y,
       w,
       h,
+      messageLines,
+      detailLines,
       confirmBtn: {
         x: x + 32,
-        y: y + h - 132,
+        y: confirmBtnY,
         w: w - 64,
         h: 46
       },
       reviewBtn: hasScoreReview ? {
         x: x + 32,
-        y: y + h - 74,
+        y: confirmBtnY + 46 + btnGap,
         w: w - 64,
         h: 46
       } : null
     };
+  }
+
+  wrapDialogText(text, maxCharsPerLine = 14) {
+    const raw = String(text || '').trim();
+    if (!raw) return [];
+
+    const lines = [];
+    const paragraphs = raw.split(/\n+/);
+    for (const paragraph of paragraphs) {
+      if (!paragraph) continue;
+      let line = '';
+      for (const ch of paragraph) {
+        line += ch;
+        if (line.length >= maxCharsPerLine) {
+          lines.push(line);
+          line = '';
+        }
+      }
+      if (line) lines.push(line);
+    }
+    return lines;
   }
 
   buildCardSlotLayout() {
@@ -5660,13 +5694,27 @@ export default class GoGameScene {
     ctx.font = 'bold 28px Arial';
     ctx.fillText(dialog.title || '对局结束', rect.x + rect.w / 2, rect.y + 42);
 
-    ctx.fillStyle = '#1f1f1f';
-    ctx.font = 'bold 34px Arial';
-    ctx.fillText(dialog.message || '', rect.x + rect.w / 2, rect.y + 92);
+    let currentY = rect.y + 96;
+    const messageLines = rect.messageLines || [];
+    if (messageLines.length > 0) {
+      ctx.fillStyle = '#1f1f1f';
+      ctx.font = 'bold 34px Arial';
+      for (const line of messageLines) {
+        ctx.fillText(line, rect.x + rect.w / 2, currentY);
+        currentY += 40;
+      }
+    }
 
-    ctx.fillStyle = '#6b4f2c';
-    ctx.font = '18px Arial';
-    ctx.fillText(dialog.detail || '', rect.x + rect.w / 2, rect.y + rect.h / 2 - 6);
+    const detailLines = rect.detailLines || [];
+    if (detailLines.length > 0) {
+      currentY += 6;
+      ctx.fillStyle = '#6b4f2c';
+      ctx.font = '18px Arial';
+      for (const line of detailLines) {
+        ctx.fillText(line, rect.x + rect.w / 2, currentY);
+        currentY += 24;
+      }
+    }
 
     drawButton(rect.confirmBtn.x, rect.confirmBtn.y, rect.confirmBtn.w, rect.confirmBtn.h, '#27ae60', dialog.confirmText || '确认');
     if (rect.reviewBtn) {
