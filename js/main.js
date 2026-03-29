@@ -8,12 +8,31 @@ import GoGameScene from './scene/go-game-scene';
 import BoardSelectScene from './scene/board-select-scene';
 import CardSelectScene from './scene/card-select-scene';
 import VictorySelectScene from './scene/victory-select-scene';
+import OnlineScene from './scene/online-scene';
+import OnlineClient from './runtime/online-client';
 
 GameGlobal.musicManager = new Music();
+
+
+function initCloudIfAvailable() {
+  try {
+    if (typeof wx === 'undefined' || !wx || !wx.cloud || typeof wx.cloud.init !== 'function') return;
+    if (GameGlobal.__fygoCloudInited) return;
+    wx.cloud.init({
+      env: 'prod-1g9u7qzrc03dfa1f',
+      traceUser: true
+    });
+    GameGlobal.__fygoCloudInited = true;
+  } catch (err) {
+    GameGlobal.__fygoCloudInitError = err || null;
+  }
+}
+
 
 export default class Main {
   constructor() {
     this.bindLoop = this.loop.bind(this);
+    initCloudIfAvailable();
 
     this.sceneManager = new SceneManager();
 
@@ -27,13 +46,18 @@ export default class Main {
       this.goGameScene
     );
 
+    this.onlineClient = new OnlineClient();
+    this.onlineScene = new OnlineScene(this.sceneManager, this.onlineClient);
+
     this.homeScene = new HomeScene(
       this.sceneManager,
       this.tutorialScene,
-      this.boardSelectScene
+      this.boardSelectScene,
+      this.onlineScene
     );
 
     this.tutorialScene.homeScene = this.homeScene;
+    this.onlineScene.homeScene = this.homeScene;
     this.goGameScene.homeScene = this.homeScene;
     this.boardSelectScene.homeScene = this.homeScene;
     this.boardSelectScene.victorySelectScene = this.victorySelectScene;

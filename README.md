@@ -54,3 +54,15 @@ git clone https://github.com/6HJS/FYGo-minigame
 ## ✨ 作者
 
 Yang Su
+
+## 在线对局（新增）
+
+首页已加入“在线对局”入口。
+
+客户端配置文件：
+
+- `js/config/online-config.js`
+
+服务器端代码：
+
+- `server/`
