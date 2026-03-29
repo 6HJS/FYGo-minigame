@@ -3708,7 +3708,7 @@ export default class GoGameScene {
 
     const contractInfo = this.resolveContracts(advanceContracts);
 
-    const stabilizeOut = this.stabilizeBoardState(this.board);
+    const stabilizeOut = this.stabilizeBoardState(this.board, { collectCounted: true, creditColor: piece.color });
     if (stabilizeOut.changed) {
       const extraRemoved = stabilizeOut.removed || [];
       const extraCounted = stabilizeOut.counted || [];
@@ -3716,7 +3716,7 @@ export default class GoGameScene {
         this.lastCaptured = (this.lastCaptured || []).concat(extraRemoved);
       }
       if (extraCounted.length > 0 && (piece.color === BLACK || piece.color === WHITE)) {
-        const bonus = this.updateCaptureCounts({ captured: extraRemoved, scoreCaptured: extraCounted, reborn: extraRemoved.length - extraCounted.length }, piece.color);
+        this.updateCaptureCounts({ captured: extraRemoved, scoreCaptured: extraCounted, reborn: extraRemoved.length - extraCounted.length }, piece.color);
       }
       this.previousBoardKey = this.getBoardKey(this.board);
     }
@@ -5496,7 +5496,7 @@ export default class GoGameScene {
 
       const liberties = this.getLiberties(nextBoard, group);
       if (liberties.size === 0) {
-        const processed = this.processCapturedGroup(nextBoard, group);
+        const processed = this.processCapturedGroup(nextBoard, group, { collectCounted: true, creditColor: player });
         totalCaptured = totalCaptured.concat(processed.removed);
         scoreCaptured = scoreCaptured.concat(processed.counted);
       }
@@ -5909,7 +5909,17 @@ export default class GoGameScene {
     for (const item of queue) {
       const cell = this.board[item.row][item.col];
       if (!this.isPiece(cell)) continue;
-      if (cell.type !== item.piece.type) continue;
+
+      // 防止“旧队列项”误驱动后来挪到该格的新棋子。
+      // 典型场景：白骑兵冲死黑骑兵并占据其原位后，若后续继续执行
+      // 黑骑兵的旧队列项，就会把这枚白骑兵再推进一步，造成同回合走两步。
+      if (item.piece && item.piece.id != null) {
+        if (cell.id !== item.piece.id) continue;
+      } else {
+        if (cell.type !== item.piece.type) continue;
+        if (cell.color !== item.piece.color) continue;
+        if ((cell.dir || null) !== (item.piece.dir || null)) continue;
+      }
 
       const out = runAdvanceForPiece(this, item.row, item.col, cell, item.pieceDef);
       if (!out) continue;
@@ -5940,7 +5950,6 @@ export default class GoGameScene {
     if (!this.isPlayablePoint(row, col)) return { ok: false, message: '不可落子' };
     if (sourceBoard[row][col] !== EMPTY) return { ok: false, message: '此处已有棋子' };
 
-    const opponent = this.getOpponent(player);
     const beforeBoardKey = this.getBoardKey(sourceBoard);
 
     if (piece.type === 'yinyang' && this.isForbiddenYinYangCross(sourceBoard, row, col)) {
@@ -5953,7 +5962,7 @@ export default class GoGameScene {
     let totalCaptured = [];
     let scoreCaptured = [];
 
-    const stabilized = this.stabilizeBoardState(nextBoard);
+    const stabilized = this.stabilizeBoardState(nextBoard, { collectCounted: true, creditColor: player });
     totalCaptured = stabilized.removed || [];
     scoreCaptured = stabilized.counted || [];
 
@@ -5982,9 +5991,12 @@ export default class GoGameScene {
     };
   }
 
-  processCapturedGroup(board, group) {
+  processCapturedGroup(board, group, options = {}) {
     const removed = [];
     const counted = [];
+    const collectCounted = options.collectCounted === true;
+    const creditColor = options.creditColor || null;
+    const applyScore = options.applyScore === true;
 
     const originalBoard = this.board;
     this.board = board;
@@ -5995,12 +6007,17 @@ export default class GoGameScene {
         if (!this.isPiece(cell)) continue;
 
         removed.push([row, col]);
+        const victimColor = cell.color;
+        const scoreForColor = applyScore && creditColor && victimColor !== creditColor ? creditColor : null;
         const out = this.resolvePieceRemovalAt(row, col, {
           reason: 'capture',
-          allowRebirth: true
+          allowRebirth: true,
+          scoreForColor
         });
 
-        if (out.counted) {
+        if (collectCounted && !out.reborn && creditColor && victimColor !== creditColor) {
+          counted.push([row, col]);
+        } else if (out.counted) {
           counted.push([row, col]);
         }
       }
@@ -6200,7 +6217,7 @@ export default class GoGameScene {
             for (const [gr, gc] of group) visited.add(`${gr},${gc}`);
             const liberties = this.getLiberties(board, group);
             if (liberties.size !== 0) continue;
-            const out = this.processCapturedGroup(board, group);
+            const out = this.processCapturedGroup(board, group, options);
             removed.push(...out.removed);
             counted.push(...out.counted);
             localChanged = true;

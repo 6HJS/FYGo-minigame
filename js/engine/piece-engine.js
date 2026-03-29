@@ -52,17 +52,44 @@ function handleMoveForward(scene, row, col, piece, pieceDef) {
     };
   }
 
-  if (pieceDef.behavior.killOccupant && scene.isPiece(scene.board[nr][nc])) {
-    scene.resolvePieceRemovalAt(nr, nc, {
-      reason: 'special',
-      allowRebirth: true,
-      scoreByVictimOpposition: true
-    });
+  const occupant = scene.board[nr][nc];
+  if (scene.isPiece(occupant)) {
+    if (pieceDef.behavior.killOccupant) {
+      const isEnemy = occupant.color !== piece.color;
+      scene.resolvePieceRemovalAt(nr, nc, {
+        reason: 'special',
+        allowRebirth: true,
+        scoreForColor: isEnemy ? piece.color : null
+      });
+    } else {
+      const fallbackType = pieceDef.behavior.transformOnBlocked || 'normal';
+      scene.board[row][col] = createPiece(piece.color, fallbackType, null, piece.id);
+      return {
+        moved: false,
+        transformed: true,
+        blockedByEnemy: occupant.color !== piece.color,
+        blockedByAlly: occupant.color === piece.color
+      };
+    }
   }
 
   scene.board[nr][nc] = createPiece(piece.color, piece.type, piece.dir, piece.id);
   scene.board[row][col] = null;
   scene.lastMove = { row: nr, col: nc };
+
+  // 骑兵冲锋后，立刻结算因“挪位”导致的提子。
+  // 规则：
+  // 1) 冲死敌子，计入骑兵方提子；
+  // 2) 冲死己子，不计提子；
+  // 3) 挪位后造成其他棋子无气，立即按骑兵行动方结算；
+  // 4) 若因此连带紧死己方棋子，也只移除，不给对方记提子。
+  if (pieceDef.behavior.killOccupant && typeof scene.stabilizeBoardState === 'function') {
+    scene.stabilizeBoardState(scene.board, {
+      collectCounted: true,
+      creditColor: piece.color,
+      applyScore: true
+    });
+  }
 
   return {
     moved: true,
