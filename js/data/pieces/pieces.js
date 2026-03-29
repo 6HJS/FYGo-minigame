@@ -272,6 +272,17 @@ module.exports = {
       behavior: { type: 'none' }
     },
     {
+      id: 'immortal',
+      name: '不朽',
+      symbol: '🏆',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#d4af37',
+      advanceOrder: 13,
+      behavior: { type: 'none' }
+    },
+    {
       id: 'archer',
       name: '弓箭手',
       symbol: '➶',

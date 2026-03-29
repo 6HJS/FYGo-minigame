@@ -85,12 +85,15 @@ export default class GoGameScene {
     this.replayCurrentIndex = 0;
     this.scoreRequestState = null;
     this.scoreSummary = null;
+    this.endgameFlags = this.collectImmortalEndgameFlags(this.board);
     this.scoreTerritoryMap = null;
     this.scoreReviewBoard = null;
     this.scoreReviewMode = false;
+    this.endgameFlags = null;
     this.winner = null;
     this.gameOver = false;
     this.victoryDialog = null;
+    this.endgameFlags = null;
     this.scoreRequestState = null;
     this.undoRequestState = null;
     this.undoHistory = [];
@@ -961,6 +964,7 @@ export default class GoGameScene {
       gameOver: this.gameOver,
       victoryDialog: this.deepCloneStateData(this.victoryDialog),
       scoreSummary: this.deepCloneStateData(this.scoreSummary),
+      endgameFlags: this.deepCloneStateData(this.endgameFlags),
       scoreTerritoryMap: this.deepCloneStateData(this.scoreTerritoryMap),
       scoreReviewBoard: this.scoreReviewBoard ? this.cloneBoard(this.scoreReviewBoard) : null,
       scoreReviewMode: !!this.scoreReviewMode
@@ -1022,6 +1026,7 @@ export default class GoGameScene {
     this.gameOver = !!snapshot.gameOver;
     this.victoryDialog = this.deepCloneStateData(snapshot.victoryDialog) || null;
     this.scoreSummary = this.deepCloneStateData(snapshot.scoreSummary) || null;
+    this.endgameFlags = this.deepCloneStateData(snapshot.endgameFlags) || null;
     this.scoreTerritoryMap = this.deepCloneStateData(snapshot.scoreTerritoryMap) || null;
     this.scoreReviewBoard = snapshot.scoreReviewBoard ? this.cloneBoard(snapshot.scoreReviewBoard) : null;
     this.scoreReviewMode = !!snapshot.scoreReviewMode;
@@ -1155,6 +1160,7 @@ export default class GoGameScene {
     if (!this.scoreRequestState) return;
     const summary = this.calculateTerritoryScore();
     this.scoreSummary = summary;
+    this.endgameFlags = this.deepCloneStateData(summary.endgameFlags) || this.collectImmortalEndgameFlags(this.board);
     this.scoreTerritoryMap = summary.territoryMap || null;
     this.scoreReviewBoard = summary.boardAfterDeadRemoval ? this.cloneBoard(summary.boardAfterDeadRemoval) : null;
     this.scoreReviewMode = false;
@@ -1238,6 +1244,7 @@ export default class GoGameScene {
 
     const emptyPoints = this.countEmptyPlayablePoints(scoringBoard);
     const isEstimate = false;
+    const endgameFlags = this.collectImmortalEndgameFlags(scoringBoard);
 
     const summary = {
       blackTerritory,
@@ -1248,6 +1255,7 @@ export default class GoGameScene {
       deadBlackRemoved: scoringState.deadBlackRemoved,
       deadWhiteRemoved: scoringState.deadWhiteRemoved,
       deadRemovedTotal: scoringState.deadRemovedTotal,
+      endgameFlags,
       komi: this.komi,
       blackScore,
       whiteScore,
@@ -1562,11 +1570,49 @@ export default class GoGameScene {
     return { points, borderColors, touchesOutside };
   }
 
+  collectImmortalEndgameFlags(board = this.board) {
+    const flags = {
+      blackImmortalSurvived: false,
+      whiteImmortalSurvived: false,
+      immortalSurvival: { black: false, white: false }
+    };
+
+    if (!Array.isArray(board)) return flags;
+
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = board[row] ? board[row][col] : null;
+        if (!this.isPiece(cell) || cell.type !== 'immortal') continue;
+        if (cell.color === BLACK) {
+          flags.blackImmortalSurvived = true;
+          flags.immortalSurvival.black = true;
+        } else if (cell.color === WHITE) {
+          flags.whiteImmortalSurvived = true;
+          flags.immortalSurvival.white = true;
+        }
+      }
+    }
+
+    return flags;
+  }
+
+  getImmortalFlagDetail(flags = this.endgameFlags) {
+    if (!flags) return '';
+    const black = !!flags.blackImmortalSurvived;
+    const white = !!flags.whiteImmortalSurvived;
+    if (black && white) return '终局 flag：黑白双方“不朽”均存活';
+    if (black) return '终局 flag：黑方“不朽”存活';
+    if (white) return '终局 flag：白方“不朽”存活';
+    return '终局 flag：双方“不朽”均未存活';
+  }
+
   openVictoryDialog() {
     if (this.isTutorialMode || !this.gameOver) return;
 
     const winnerText = this.winner === BLACK ? '黑棋' : '白棋';
     let detail = `${winnerText}获胜。`;
+
+    const immortalDetail = this.getImmortalFlagDetail();
 
     if (this.scoreSummary) {
       const summary = this.scoreSummary;
@@ -1581,6 +1627,10 @@ export default class GoGameScene {
       detail = target > 0
         ? `${winnerText}率先达到提 ${target} 子的胜利条件。`
         : `${winnerText}获胜。`;
+    }
+
+    if (immortalDetail) {
+      detail = `${detail}；${immortalDetail}`;
     }
 
     this.victoryDialog = {
@@ -1669,6 +1719,7 @@ export default class GoGameScene {
     this.winner = null;
     this.victoryDialog = null;
     this.scoreSummary = null;
+    this.endgameFlags = null;
     this.scoreTerritoryMap = null;
     this.scoreReviewBoard = null;
     this.scoreReviewMode = false;
@@ -1765,6 +1816,7 @@ export default class GoGameScene {
     this.winner = null;
     this.gameOver = false;
     this.victoryDialog = null;
+    this.endgameFlags = null;
     this.scoreRequestState = null;
     this.undoRequestState = null;
     this.undoHistory = [];
@@ -6480,6 +6532,7 @@ export default class GoGameScene {
     this.directionButtons = null;
     this.scoreRequestState = null;
     this.scoreSummary = null;
+    this.endgameFlags = this.collectImmortalEndgameFlags(this.board);
     this.scoreTerritoryMap = null;
     this.scoreReviewMode = false;
     const loserText = this.getColorName(loser);
@@ -6488,7 +6541,7 @@ export default class GoGameScene {
     this.victoryDialog = {
       title: '对局结束',
       message: `${winnerText}赢了`,
-      detail: `${loserText}5分钟倒计时耗尽，判负。`,
+      detail: `${loserText}5分钟倒计时耗尽，判负。；${this.getImmortalFlagDetail(this.endgameFlags)}`,
       confirmText: '确认返回主界面',
       reviewText: ''
     };
