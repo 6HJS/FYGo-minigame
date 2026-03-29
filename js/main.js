@@ -13,26 +13,9 @@ import OnlineClient from './runtime/online-client';
 
 GameGlobal.musicManager = new Music();
 
-
-function initCloudIfAvailable() {
-  try {
-    if (typeof wx === 'undefined' || !wx || !wx.cloud || typeof wx.cloud.init !== 'function') return;
-    if (GameGlobal.__fygoCloudInited) return;
-    wx.cloud.init({
-      env: 'prod-1g9u7qzrc03dfa1f',
-      traceUser: true
-    });
-    GameGlobal.__fygoCloudInited = true;
-  } catch (err) {
-    GameGlobal.__fygoCloudInitError = err || null;
-  }
-}
-
-
 export default class Main {
   constructor() {
     this.bindLoop = this.loop.bind(this);
-    initCloudIfAvailable();
 
     this.sceneManager = new SceneManager();
 

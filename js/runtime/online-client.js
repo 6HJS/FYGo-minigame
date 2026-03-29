@@ -1,7 +1,66 @@
 import ONLINE_CONFIG from '../config/online-config';
 
+
+function debugLog(tag, payload) {
+  try {
+    if (typeof payload === 'undefined') {
+      console.log(`[OnlineClient][${tag}]`);
+      return;
+    }
+    console.log(`[OnlineClient][${tag}]`, payload);
+  } catch (err) {}
+}
+
 function randomId(prefix = 'guest') {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+
+const STORAGE_KEYS = {
+  profile: 'fygo_online_profile_v2',
+  deviceId: 'fygo_online_device_id_v1'
+};
+
+function readStorage(key) {
+  try {
+    if (typeof wx !== 'undefined' && wx && typeof wx.getStorageSync === 'function') {
+      return wx.getStorageSync(key);
+    }
+  } catch (err) {}
+  return '';
+}
+
+function writeStorage(key, value) {
+  try {
+    if (typeof wx !== 'undefined' && wx && typeof wx.setStorageSync === 'function') {
+      wx.setStorageSync(key, value);
+    }
+  } catch (err) {}
+}
+
+function getDeviceId() {
+  let deviceId = readStorage(STORAGE_KEYS.deviceId);
+  if (!deviceId) {
+    deviceId = randomId('dev');
+    writeStorage(STORAGE_KEYS.deviceId, deviceId);
+  }
+  return String(deviceId || '').replace(/[^a-zA-Z0-9_\-]/g, '').slice(-16);
+}
+
+function loadStoredProfile() {
+  const raw = readStorage(STORAGE_KEYS.profile);
+  if (!raw) return null;
+  if (typeof raw === 'object' && raw) return raw;
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    return null;
+  }
+}
+
+function saveStoredProfile(profile) {
+  if (!profile) return;
+  writeStorage(STORAGE_KEYS.profile, profile);
 }
 
 export default class OnlineClient {
@@ -11,6 +70,7 @@ export default class OnlineClient {
     this.playerToken = '';
     this.playerId = '';
     this.roomId = '';
+    this.desiredRoomId = '';
     this.playerColor = '';
     this.lastError = '';
     this.lastState = null;
@@ -18,14 +78,32 @@ export default class OnlineClient {
     this.heartbeatTimer = null;
     this.messageHandlers = new Set();
     this.statusHandlers = new Set();
-    this.socketReady = false;
     this.pendingMessages = [];
-    this.connectPromise = null;
+    this.isSocketOpen = false;
+    this.socketOpenPromise = null;
+    this.socketOpenResolve = null;
+    this.socketOpenReject = null;
+    this.deviceId = getDeviceId();
+    this.forceTakeover = !this.config || this.config.forceTakeover !== false;
+    this.subscribedRoomId = '';
+    this.desiredRoomId = '';
+    this.subscribeInFlight = null;
+    this.roomSubscribeTimer = null;
+    this.roomSubscribeAttempts = 0;
+    this.roomSubscribeResolve = null;
+    debugLog('INIT', { httpBaseUrl: this.config && this.config.httpBaseUrl, wsUrl: this.config && this.config.wsUrl, useCloudContainerForHttp: !!(this.config && this.config.useCloudContainerForHttp), deviceId: this.deviceId, forceTakeover: this.forceTakeover });
   }
 
   setPlayerProfile(profile = {}) {
-    this.playerId = profile.playerId || this.playerId || randomId('player');
-    this.playerToken = profile.playerToken || this.playerToken || randomId('token');
+    const stored = loadStoredProfile() || {};
+    const basePlayerId = profile.basePlayerId || stored.basePlayerId || this.playerId || randomId('player');
+    const basePlayerToken = profile.basePlayerToken || stored.basePlayerToken || this.playerToken || randomId('token');
+    const sanitizedBasePlayerId = String(basePlayerId).replace(/[^a-zA-Z0-9_\-]/g, '').slice(0, 24) || randomId('player');
+    const sanitizedBasePlayerToken = String(basePlayerToken).replace(/[^a-zA-Z0-9_\-]/g, '').slice(0, 24) || randomId('token');
+    this.playerId = `${sanitizedBasePlayerId}_${this.deviceId}`;
+    this.playerToken = `${sanitizedBasePlayerToken}_${this.deviceId}`;
+    saveStoredProfile({ basePlayerId: sanitizedBasePlayerId, basePlayerToken: sanitizedBasePlayerToken });
+    debugLog('SET_PLAYER_PROFILE', { basePlayerId: sanitizedBasePlayerId, playerId: this.playerId, deviceId: this.deviceId, playerTokenPreview: this.playerToken ? `${String(this.playerToken).slice(0, 10)}...` : '' });
   }
 
   onMessage(handler) {
@@ -62,21 +140,7 @@ export default class OnlineClient {
 
   request(path, method = 'GET', data = null) {
     return new Promise((resolve, reject) => {
-      const fallbackToWxRequest = (originalErr) => {
-        if (!this.config.httpBaseUrl || !wx || typeof wx.request !== 'function') {
-          reject(originalErr || new Error('网络请求失败'));
-          return;
-        }
-        wx.request({
-          url: `${this.config.httpBaseUrl}${path}`,
-          method,
-          data,
-          timeout: this.config.requestTimeoutMs,
-          header: { 'content-type': 'application/json' },
-          success: handleSuccess,
-          fail: (fallbackErr) => reject(fallbackErr || originalErr || new Error('网络请求失败'))
-        });
-      };
+      debugLog('HTTP_REQUEST_BEGIN', { path, method, data, preferCloudContainer: !!(this.config && this.config.useCloudContainerForHttp) });
       const preferCloudContainer = !!(
         this.config &&
         this.config.useCloudContainerForHttp &&
@@ -91,9 +155,11 @@ export default class OnlineClient {
         const statusCode = res && typeof res.statusCode === 'number' ? res.statusCode : 200;
         if (statusCode < 200 || statusCode >= 300) {
           const bodyMessage = res && res.data && (res.data.message || res.data.error);
+          debugLog('HTTP_REQUEST_FAIL_STATUS', { path, method, statusCode, body: res && res.data ? res.data : null });
           reject(new Error(bodyMessage || `HTTP ${statusCode}`));
           return;
         }
+        debugLog('HTTP_REQUEST_SUCCESS', { path, method, statusCode, data: (res && res.data) || {} });
         resolve((res && res.data) || {});
       };
 
@@ -107,12 +173,29 @@ export default class OnlineClient {
           method,
           data,
           success: handleSuccess,
-          fail: (err) => fallbackToWxRequest(err)
+          fail: (err) => {
+            if (!this.config.httpBaseUrl || typeof wx.request !== 'function') {
+              debugLog('HTTP_REQUEST_CLOUD_FAIL_NO_FALLBACK', { path, method, error: err || null });
+              reject(err || new Error('云托管请求失败'));
+              return;
+            }
+            debugLog('HTTP_REQUEST_CLOUD_FAIL_FALLBACK_TO_WX_REQUEST', { path, method, error: err || null });
+            wx.request({
+              url: `${this.config.httpBaseUrl}${path}`,
+              method,
+              data,
+              timeout: this.config.requestTimeoutMs,
+              header: { 'content-type': 'application/json' },
+              success: handleSuccess,
+              fail: (fallbackErr) => reject(fallbackErr || err || new Error('网络请求失败'))
+            });
+          }
         });
         return;
       }
 
       if (!wx || typeof wx.request !== 'function') {
+        debugLog('HTTP_REQUEST_ENV_UNSUPPORTED', { path, method });
         reject(new Error('当前环境不支持网络请求'));
         return;
       }
@@ -132,77 +215,122 @@ export default class OnlineClient {
   }
 
   async connectWebSocket() {
-    if (this.socketReady && this.socketTask) return;
-    if (this.connectPromise) return this.connectPromise;
+    if (this.isSocketOpen) return;
+    if (this.socketOpenPromise) return this.socketOpenPromise;
     if (!wx || typeof wx.connectSocket !== 'function') {
       throw new Error('当前环境不支持 WebSocket');
     }
-    const query = `playerId=${encodeURIComponent(this.playerId)}&playerToken=${encodeURIComponent(this.playerToken)}`;
-    const url = `${this.config.wsUrl}?${query}`;
 
-    this.connectPromise = new Promise((resolve, reject) => {
-      let settled = false;
-      this.socketReady = false;
-      this.socketTask = wx.connectSocket({ url });
-
-      this.socketTask.onOpen(() => {
-        this.socketReady = true;
-        settled = true;
-        this.connectPromise = null;
-        this.emitStatus({ type: 'socket_open' });
-        this.startHeartbeat();
-        this.flushPendingMessages();
-        if (this.roomId) {
-          this.send({ type: 'subscribe_room', roomId: this.roomId });
-        }
-        resolve();
-      });
-
-      this.socketTask.onClose(() => {
-        this.stopHeartbeat();
-        this.socketReady = false;
-        this.socketTask = null;
-        this.connectPromise = null;
-        this.emitStatus({ type: 'socket_close' });
-      });
-
-      this.socketTask.onError((err) => {
-        this.lastError = 'WebSocket 连接失败';
-        this.socketReady = false;
-        this.emitStatus({ type: 'socket_error', error: err || null });
-        if (!settled) {
-          settled = true;
-          this.connectPromise = null;
-          reject(err || new Error('WebSocket 连接失败'));
-        }
-      });
-
-      this.socketTask.onMessage((res) => {
-        let payload = null;
-        try {
-          payload = JSON.parse(res.data);
-        } catch (err) {
-          payload = { type: 'raw', data: res.data };
-        }
-        this.lastEvent = payload;
-        if (payload && payload.type === 'room_state') {
-          this.lastState = payload.room || null;
-        }
-        this.emitMessage(payload);
-      });
+    this.socketOpenPromise = new Promise((resolve, reject) => {
+      this.socketOpenResolve = resolve;
+      this.socketOpenReject = reject;
     });
 
-    return this.connectPromise;
+    const query = `playerId=${encodeURIComponent(this.playerId)}&playerToken=${encodeURIComponent(this.playerToken)}`;
+    const url = `${this.config.wsUrl}?${query}`;
+    debugLog('WS_CONNECT_BEGIN', { url, playerId: this.playerId, roomId: this.roomId || null });
+    this.socketTask = wx.connectSocket({ url });
+
+    this.socketTask.onOpen(() => {
+      this.isSocketOpen = true;
+      debugLog('WS_OPEN', { roomId: this.roomId || null, pendingMessages: this.pendingMessages.length });
+      this.emitStatus({ type: 'socket_open' });
+      this.startHeartbeat();
+      this.flushPendingMessages();
+      if (this.desiredRoomId || this.roomId) {
+        this.beginRoomSubscriptionLoop(this.desiredRoomId || this.roomId);
+      }
+      if (this.socketOpenResolve) {
+        this.socketOpenResolve();
+      }
+      this.socketOpenResolve = null;
+      this.socketOpenReject = null;
+      this.socketOpenPromise = null;
+    });
+
+    this.socketTask.onClose(() => {
+      debugLog('WS_CLOSE', { roomId: this.roomId || null, pendingMessages: this.pendingMessages.length });
+      this.stopHeartbeat();
+      this.socketTask = null;
+      this.isSocketOpen = false;
+      this.socketOpenPromise = null;
+      this.socketOpenResolve = null;
+      this.socketOpenReject = null;
+      this.stopRoomSubscriptionLoop();
+      this.emitStatus({ type: 'socket_close' });
+    });
+
+    this.socketTask.onError((err) => {
+      this.lastError = 'WebSocket 连接失败';
+      debugLog('WS_ERROR', err || null);
+      this.isSocketOpen = false;
+      if (this.socketOpenReject) {
+        this.socketOpenReject(err || new Error(this.lastError));
+      }
+      this.socketOpenPromise = null;
+      this.socketOpenResolve = null;
+      this.socketOpenReject = null;
+      this.emitStatus({ type: 'socket_error', error: err || null });
+    });
+
+    this.socketTask.onMessage((res) => {
+      let payload = null;
+      try {
+        payload = JSON.parse(res.data);
+      } catch (err) {
+        payload = { type: 'raw', data: res.data };
+      }
+      debugLog('WS_MESSAGE', payload);
+      this.lastEvent = payload;
+      const payloadRoomId = String(
+        (payload && payload.roomId) ||
+        (payload && payload.room && payload.room.roomId) ||
+        ''
+      ).trim().toUpperCase();
+      const expectedRoomId = String(this.desiredRoomId || this.roomId || '').trim().toUpperCase();
+
+      if (payload && payload.type === 'room_joined') {
+        this.subscribedRoomId = payloadRoomId || expectedRoomId || '';
+        this.desiredRoomId = this.subscribedRoomId || this.desiredRoomId || '';
+        this.stopRoomSubscriptionLoop(true);
+        debugLog('WS_ROOM_JOINED_CONFIRMED', { roomId: this.subscribedRoomId || null, color: payload.color || null });
+      }
+      if (payload && payload.type === 'room_state') {
+        this.lastState = payload.room || null;
+      }
+      if (
+        payload &&
+        expectedRoomId &&
+        payloadRoomId &&
+        payloadRoomId === expectedRoomId &&
+        (payload.type === 'room_state' || payload.type === 'presence')
+      ) {
+        this.subscribedRoomId = payloadRoomId;
+        this.desiredRoomId = payloadRoomId;
+        this.stopRoomSubscriptionLoop(true);
+        debugLog('WS_ROOM_SYNC_CONFIRMED', { roomId: payloadRoomId, payloadType: payload.type });
+      }
+      this.emitMessage(payload);
+    });
+
+    return this.socketOpenPromise;
   }
 
+
   flushPendingMessages() {
-    if (!this.socketReady || !this.socketTask || typeof this.socketTask.send !== 'function') return;
+    if (!this.isSocketOpen || !this.socketTask || typeof this.socketTask.send !== 'function') {
+      debugLog('WS_FLUSH_SKIPPED', { isSocketOpen: this.isSocketOpen, hasSocketTask: !!this.socketTask, pendingMessages: this.pendingMessages.length });
+      return;
+    }
     const queue = this.pendingMessages.slice();
+    debugLog('WS_FLUSH_BEGIN', { count: queue.length });
     this.pendingMessages.length = 0;
     queue.forEach((payload) => {
       try {
+        debugLog('WS_FLUSH_SEND', payload);
         this.socketTask.send({ data: JSON.stringify(payload) });
       } catch (err) {
+        debugLog('WS_FLUSH_REQUEUE', payload);
         this.pendingMessages.unshift(payload);
       }
     });
@@ -211,79 +339,275 @@ export default class OnlineClient {
   startHeartbeat() {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
+      debugLog('WS_HEARTBEAT_PING', { roomId: this.roomId || null });
       this.send({ type: 'ping', ts: Date.now() });
     }, this.config.heartbeatMs);
   }
 
   stopHeartbeat() {
     if (this.heartbeatTimer) {
+      debugLog('WS_HEARTBEAT_STOP');
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
   }
 
+  stopRoomSubscriptionLoop(success = false) {
+    if (this.roomSubscribeTimer) {
+      clearInterval(this.roomSubscribeTimer);
+      this.roomSubscribeTimer = null;
+    }
+    this.roomSubscribeAttempts = 0;
+    if (success && this.roomSubscribeResolve) {
+      try {
+        this.roomSubscribeResolve(true);
+      } catch (err) {}
+    }
+    this.roomSubscribeResolve = null;
+  }
+
+  beginRoomSubscriptionLoop(targetRoomId = this.roomId) {
+    const roomId = String(targetRoomId || '').trim().toUpperCase();
+    if (!roomId) {
+      debugLog('ROOM_SUBSCRIBE_LOOP_SKIP_NO_ROOM');
+      return;
+    }
+    this.desiredRoomId = roomId;
+    if (this.subscribedRoomId === roomId) {
+      debugLog('ROOM_SUBSCRIBE_LOOP_ALREADY_CONFIRMED', { roomId });
+      this.stopRoomSubscriptionLoop(true);
+      return;
+    }
+    if (!this.isSocketOpen) {
+      debugLog('ROOM_SUBSCRIBE_LOOP_WAIT_SOCKET', { roomId });
+      return;
+    }
+    const sendSubscribe = () => {
+      if (!this.isSocketOpen || !this.socketTask) return;
+      if (this.subscribedRoomId === roomId) {
+        this.stopRoomSubscriptionLoop(true);
+        return;
+      }
+      this.roomSubscribeAttempts += 1;
+      debugLog('ROOM_SUBSCRIBE_LOOP_SEND', { roomId, attempt: this.roomSubscribeAttempts });
+      this.send({ type: 'subscribe_room', roomId });
+      if (this.roomSubscribeAttempts >= 12) {
+        debugLog('ROOM_SUBSCRIBE_LOOP_MAX_ATTEMPTS', { roomId, attempts: this.roomSubscribeAttempts });
+        this.stopRoomSubscriptionLoop(false);
+      }
+    };
+    if (!this.roomSubscribeTimer) {
+      this.roomSubscribeAttempts = 0;
+      sendSubscribe();
+      this.roomSubscribeTimer = setInterval(sendSubscribe, 350);
+    } else {
+      sendSubscribe();
+    }
+  }
+
+  async ensureRoomSubscribed(targetRoomId = this.roomId) {
+    const roomId = String(targetRoomId || '').trim().toUpperCase();
+    if (!roomId) {
+      debugLog('ENSURE_ROOM_SUBSCRIBED_SKIPPED_NO_ROOM');
+      return false;
+    }
+    this.desiredRoomId = roomId;
+    if (this.subscribedRoomId === roomId) {
+      debugLog('ENSURE_ROOM_SUBSCRIBED_ALREADY', { roomId });
+      return true;
+    }
+    if (this.subscribeInFlight) {
+      debugLog('ENSURE_ROOM_SUBSCRIBED_REUSE_INFLIGHT', { roomId });
+      return this.subscribeInFlight;
+    }
+
+    this.subscribeInFlight = (async () => {
+      await this.connectWebSocket();
+      return await new Promise((resolve, reject) => {
+        let finished = false;
+        const timeoutId = setTimeout(() => {
+          if (finished) return;
+          finished = true;
+          this.roomSubscribeResolve = null;
+          reject(new Error(`房间订阅失败：${roomId}`));
+        }, 5000);
+        this.roomSubscribeResolve = (ok) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timeoutId);
+          resolve(!!ok);
+        };
+        this.beginRoomSubscriptionLoop(roomId);
+      });
+    })();
+
+    try {
+      return await this.subscribeInFlight;
+    } finally {
+      this.subscribeInFlight = null;
+    }
+  }
+
   send(payload) {
     if (!payload) return false;
-    if (!this.socketTask || typeof this.socketTask.send !== 'function' || !this.socketReady) {
+    debugLog('WS_SEND_ATTEMPT', { payload, isSocketOpen: this.isSocketOpen, hasSocketTask: !!this.socketTask, pendingMessages: this.pendingMessages.length });
+    if (!this.socketTask || typeof this.socketTask.send !== 'function') {
       this.pendingMessages.push(payload);
+      debugLog('WS_SEND_QUEUED_NO_SOCKET', { payload, pendingMessages: this.pendingMessages.length });
+      return false;
+    }
+    if (!this.isSocketOpen) {
+      this.pendingMessages.push(payload);
+      debugLog('WS_SEND_QUEUED_NOT_OPEN', { payload, pendingMessages: this.pendingMessages.length });
       return false;
     }
     try {
       this.socketTask.send({ data: JSON.stringify(payload) });
+      debugLog('WS_SEND_SUCCESS', payload);
       return true;
     } catch (err) {
       this.pendingMessages.push(payload);
+      debugLog('WS_SEND_FAIL_REQUEUED', { payload, pendingMessages: this.pendingMessages.length });
       return false;
     }
   }
 
+
+  disconnectSocket() {
+    debugLog('WS_DISCONNECT_REQUEST', { roomId: this.roomId || null, playerId: this.playerId || null });
+    this.stopHeartbeat();
+    this.pendingMessages.length = 0;
+    this.subscribedRoomId = '';
+    this.desiredRoomId = '';
+    this.subscribeInFlight = null;
+    this.stopRoomSubscriptionLoop(false);
+    this.isSocketOpen = false;
+    this.socketOpenPromise = null;
+    this.socketOpenResolve = null;
+    this.socketOpenReject = null;
+    const socketTask = this.socketTask;
+    this.socketTask = null;
+    if (socketTask && typeof socketTask.close === 'function') {
+      try {
+        socketTask.close({ code: 1000, reason: 'client_switch_room' });
+      } catch (err) {
+        debugLog('WS_DISCONNECT_CLOSE_FAIL', err || null);
+      }
+    }
+  }
+
+  async autoHangup(reason = 'switch_room') {
+    debugLog('AUTO_HANGUP_BEGIN', { reason, roomId: this.roomId || null, playerId: this.playerId || null });
+    this.disconnectSocket();
+    this.roomId = '';
+    this.desiredRoomId = '';
+    this.playerColor = '';
+    this.lastState = null;
+    this.lastEvent = null;
+    this.lastError = '';
+  }
+
   async ensureIdentity() {
-    if (this.playerId && this.playerToken) return;
+    if (this.playerId && this.playerToken) {
+      debugLog('ENSURE_IDENTITY_ALREADY_PRESENT', { playerId: this.playerId });
+      return;
+    }
     this.setPlayerProfile({});
   }
 
   async createRoom(options = {}) {
     await this.ensureIdentity();
+    await this.autoHangup('before_create_room');
+    debugLog('CREATE_ROOM_BEGIN', options);
     const result = await this.request('/api/rooms', 'POST', {
       playerId: this.playerId,
       playerToken: this.playerToken,
       boardId: options.boardId || 'board_9x9',
       turnTimeMs: options.turnTimeMs || 30000,
-      mode: 'room'
+      mode: 'room',
+      forceTakeover: options.forceTakeover !== false && this.forceTakeover,
+      deviceId: this.deviceId,
+      testMultiLogin: true
     });
-    this.roomId = result.roomId || '';
+    const authoritativeRoom = result.room || null;
+    this.roomId = result.roomId || (authoritativeRoom && authoritativeRoom.roomId) || '';
     this.playerColor = result.playerColor || 'black';
-    await this.connectWebSocket();
-    this.send({ type: 'subscribe_room', roomId: this.roomId });
+    if (authoritativeRoom) {
+      this.lastState = authoritativeRoom;
+      this.emitMessage({ type: 'room_state', room: authoritativeRoom, source: 'http_create_room' });
+    }
+    try {
+      await this.ensureRoomSubscribed(this.roomId);
+      result.subscriptionPending = false;
+    } catch (err) {
+      result.subscriptionPending = !authoritativeRoom;
+      result.subscriptionWarning = err && err.message ? err.message : '房间订阅确认超时';
+      debugLog('CREATE_ROOM_SUBSCRIBE_DEFERRED', { roomId: this.roomId || null, warning: result.subscriptionWarning, httpRoomReady: !!authoritativeRoom });
+    }
+    debugLog('CREATE_ROOM_DONE', result);
     return result;
   }
 
   async quickMatch(options = {}) {
     await this.ensureIdentity();
+    await this.autoHangup('before_quick_match');
+    debugLog('QUICK_MATCH_BEGIN', options);
     const result = await this.request('/api/matchmaking/quick', 'POST', {
       playerId: this.playerId,
       playerToken: this.playerToken,
       boardId: options.boardId || 'board_9x9',
-      turnTimeMs: options.turnTimeMs || 30000
+      turnTimeMs: options.turnTimeMs || 30000,
+      forceTakeover: options.forceTakeover !== false && this.forceTakeover,
+      deviceId: this.deviceId,
+      testMultiLogin: true
     });
-    this.roomId = result.roomId || '';
+    const authoritativeRoom = result.room || null;
+    this.roomId = result.roomId || (authoritativeRoom && authoritativeRoom.roomId) || '';
     this.playerColor = result.playerColor || '';
-    await this.connectWebSocket();
-    this.send({ type: 'subscribe_room', roomId: this.roomId });
+    if (authoritativeRoom) {
+      this.lastState = authoritativeRoom;
+      this.emitMessage({ type: 'room_state', room: authoritativeRoom, source: 'http_quick_match' });
+    }
+    try {
+      await this.ensureRoomSubscribed(this.roomId);
+      result.subscriptionPending = false;
+    } catch (err) {
+      result.subscriptionPending = !authoritativeRoom;
+      result.subscriptionWarning = err && err.message ? err.message : '房间订阅确认超时';
+      debugLog('QUICK_MATCH_SUBSCRIBE_DEFERRED', { roomId: this.roomId || null, warning: result.subscriptionWarning, httpRoomReady: !!authoritativeRoom });
+    }
+    debugLog('QUICK_MATCH_DONE', result);
     return result;
   }
 
   async joinRoom(roomId) {
     await this.ensureIdentity();
+    await this.autoHangup('before_join_room');
     const normalizedRoomId = String(roomId || '').trim().toUpperCase();
+    debugLog('JOIN_ROOM_BEGIN', { roomId: normalizedRoomId });
     const result = await this.request(`/api/rooms/${normalizedRoomId}/join`, 'POST', {
       playerId: this.playerId,
-      playerToken: this.playerToken
+      playerToken: this.playerToken,
+      forceTakeover: this.forceTakeover,
+      deviceId: this.deviceId,
+      testMultiLogin: true
     });
-    this.roomId = result.roomId || normalizedRoomId;
+    const authoritativeRoom = result.room || null;
+    this.roomId = result.roomId || (authoritativeRoom && authoritativeRoom.roomId) || normalizedRoomId;
     this.playerColor = result.playerColor || 'white';
-    await this.connectWebSocket();
-    this.send({ type: 'subscribe_room', roomId: this.roomId });
+    if (authoritativeRoom) {
+      this.lastState = authoritativeRoom;
+      this.emitMessage({ type: 'room_state', room: authoritativeRoom, source: 'http_join_room' });
+    }
+    try {
+      await this.ensureRoomSubscribed(this.roomId);
+      result.subscriptionPending = false;
+    } catch (err) {
+      result.subscriptionPending = !authoritativeRoom;
+      result.subscriptionWarning = err && err.message ? err.message : '房间订阅确认超时';
+      debugLog('JOIN_ROOM_SUBSCRIBE_DEFERRED', { roomId: this.roomId || null, warning: result.subscriptionWarning, httpRoomReady: !!authoritativeRoom });
+    }
+    debugLog('JOIN_ROOM_DONE', result);
     return result;
   }
 }

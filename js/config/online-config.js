@@ -9,7 +9,8 @@ export const ONLINE_CONFIG = {
   cloudService: 'fygo-prod',
 
   requestTimeoutMs: 8000,
-  heartbeatMs: 15000
+  heartbeatMs: 15000,
+  forceTakeover: true
 };
 
 export default ONLINE_CONFIG;

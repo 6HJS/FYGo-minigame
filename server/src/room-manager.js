@@ -1,5 +1,6 @@
 import { customAlphabet } from 'nanoid';
 import AuthoritativeEngine, { COLORS } from './game/engine.js';
+import { log, warn, roomSummary, mapEntries } from './logger.js';
 
 const roomIdGen = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 6);
 
@@ -14,17 +15,89 @@ export default class RoomManager {
     this.queue = [];
     this.roomExpireMs = roomExpireMs;
     this.matchQueueExpireMs = matchQueueExpireMs;
+    log('ROOM_MANAGER_INIT', { roomExpireMs, matchQueueExpireMs });
   }
 
   normalizePlayer(playerId, playerToken) {
-    if (!playerId || !playerToken) throw new Error('缺少 playerId 或 playerToken');
+    if (!playerId || !playerToken) {
+      warn('NORMALIZE_PLAYER_FAIL', { playerId: !!playerId, playerToken: !!playerToken });
+      throw new Error('缺少 playerId 或 playerToken');
+    }
     return { playerId: String(playerId), playerToken: String(playerToken) };
   }
 
-  createRoom({ playerId, playerToken, boardId = 'board_9x9', turnTimeMs = 30000 }) {
+
+  forceDisconnectPlayer(playerId, reason = 'force_takeover') {
+    const normalizedPlayerId = playerId ? String(playerId) : '';
+    if (!normalizedPlayerId) return null;
+    const roomId = this.playerRoom.get(normalizedPlayerId);
+    log('FORCE_DISCONNECT_PLAYER_REQUEST', { playerId: normalizedPlayerId, roomId: roomId || null, reason });
+    if (!roomId) return null;
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      this.playerRoom.delete(normalizedPlayerId);
+      log('FORCE_DISCONNECT_PLAYER_STALE_MAPPING_CLEARED', { playerId: normalizedPlayerId, roomId, reason, playerRoom: mapEntries(this.playerRoom) });
+      return { roomId, deleted: false, stale: true };
+    }
+
+    let targetColor = null;
+    if (room.players.black && room.players.black.playerId === normalizedPlayerId) {
+      targetColor = COLORS.BLACK;
+    } else if (room.players.white && room.players.white.playerId === normalizedPlayerId) {
+      targetColor = COLORS.WHITE;
+    }
+
+    if (!targetColor) {
+      this.playerRoom.delete(normalizedPlayerId);
+      log('FORCE_DISCONNECT_PLAYER_MAPPING_ONLY_CLEARED', { playerId: normalizedPlayerId, roomId, reason, playerRoom: mapEntries(this.playerRoom) });
+      return { roomId, deleted: false, detachedOnly: true };
+    }
+
+    const seat = room.players[targetColor];
+    const seatWs = seat && seat.ws ? seat.ws : null;
+    if (seatWs) {
+      room.subscribers.delete(seatWs);
+      seatWs.roomId = '';
+      if (typeof seatWs.close === 'function') {
+        try {
+          seatWs.close(4001, 'force_takeover');
+        } catch (err) {
+          warn('FORCE_DISCONNECT_PLAYER_SOCKET_CLOSE_FAIL', { playerId: normalizedPlayerId, roomId, reason, error: err && err.message ? err.message : String(err) });
+        }
+      }
+    }
+    seat.online = false;
+    seat.ws = null;
+    room.updatedAt = now();
+
+    this.playerRoom.delete(normalizedPlayerId);
+    this.queue = this.queue.filter((item) => item.playerId !== normalizedPlayerId);
+
+    if (room.phase === 'waiting') {
+      if (room.players.black) this.playerRoom.delete(room.players.black.playerId);
+      if (room.players.white) this.playerRoom.delete(room.players.white.playerId);
+      room.subscribers.clear();
+      this.rooms.delete(roomId);
+      log('FORCE_DISCONNECT_PLAYER_WAITING_ROOM_DELETED', { playerId: normalizedPlayerId, roomId, reason, playerRoom: mapEntries(this.playerRoom), queueLength: this.queue.length });
+      return { roomId, deleted: true, waiting: true };
+    }
+
+    log('FORCE_DISCONNECT_PLAYER_PLAYING_ROOM_DETACHED', { playerId: normalizedPlayerId, roomId, color: targetColor, reason, room: roomSummary(room), playerRoom: mapEntries(this.playerRoom) });
+    return { roomId, deleted: false, waiting: false, color: targetColor };
+  }
+
+  createRoom({ playerId, playerToken, boardId = 'board_9x9', turnTimeMs = 30000, forceTakeover = true }) {
     const player = this.normalizePlayer(playerId, playerToken);
     this.cleanup();
-    if (this.playerRoom.has(player.playerId)) throw new Error('该玩家已经在房间中');
+    log('CREATE_ROOM_REQUEST', { playerId: player.playerId, boardId, turnTimeMs, forceTakeover, currentPlayerRoom: this.playerRoom.get(player.playerId) || null });
+    if (this.playerRoom.has(player.playerId)) {
+      if (forceTakeover) {
+        this.forceDisconnectPlayer(player.playerId, 'create_room_force_takeover');
+      } else {
+        warn('CREATE_ROOM_BLOCKED_ALREADY_IN_ROOM', { playerId: player.playerId, roomId: this.playerRoom.get(player.playerId) });
+        throw new Error('该玩家已经在房间中');
+      }
+    }
 
     const roomId = roomIdGen();
     const size = this.getBoardSize(boardId);
@@ -45,23 +118,31 @@ export default class RoomManager {
     };
     this.rooms.set(roomId, room);
     this.playerRoom.set(player.playerId, roomId);
+    log('CREATE_ROOM_SUCCESS', { room: roomSummary(room), playerRoom: mapEntries(this.playerRoom) });
     return { room, playerColor: COLORS.BLACK };
   }
 
-  joinRoom(roomId, { playerId, playerToken }) {
+  joinRoom(roomId, { playerId, playerToken, forceTakeover = true }) {
     const player = this.normalizePlayer(playerId, playerToken);
     this.cleanup();
     const room = this.rooms.get(roomId);
+    log('JOIN_ROOM_REQUEST', { roomId, playerId: player.playerId, forceTakeover, existingPlayerRoom: this.playerRoom.get(player.playerId) || null });
     if (!room) throw new Error('房间不存在');
     if (room.phase === 'ended') throw new Error('房间已结束');
     if (this.playerRoom.has(player.playerId) && this.playerRoom.get(player.playerId) !== roomId) {
-      throw new Error('该玩家已经在其他房间中');
+      if (forceTakeover) {
+        this.forceDisconnectPlayer(player.playerId, 'join_room_force_takeover');
+      } else {
+        throw new Error('该玩家已经在其他房间中');
+      }
     }
 
     if (room.players.black && room.players.black.playerId === player.playerId) {
+      log('JOIN_ROOM_REJOIN_BLACK', { room: roomSummary(room), playerId: player.playerId });
       return { room, playerColor: COLORS.BLACK, rejoin: true };
     }
     if (room.players.white && room.players.white.playerId === player.playerId) {
+      log('JOIN_ROOM_REJOIN_WHITE', { room: roomSummary(room), playerId: player.playerId });
       return { room, playerColor: COLORS.WHITE, rejoin: true };
     }
 
@@ -71,13 +152,22 @@ export default class RoomManager {
     room.state.start();
     room.updatedAt = now();
     this.playerRoom.set(player.playerId, roomId);
+    log('JOIN_ROOM_SUCCESS', { room: roomSummary(room), playerId: player.playerId, playerRoom: mapEntries(this.playerRoom) });
     return { room, playerColor: COLORS.WHITE, rejoin: false };
   }
 
-  enqueueQuickMatch({ playerId, playerToken, boardId = 'board_9x9', turnTimeMs = 30000 }) {
+  enqueueQuickMatch({ playerId, playerToken, boardId = 'board_9x9', turnTimeMs = 30000, forceTakeover = true }) {
     const player = this.normalizePlayer(playerId, playerToken);
     this.cleanup();
-    if (this.playerRoom.has(player.playerId)) throw new Error('该玩家已经在房间中');
+    log('QUICK_MATCH_REQUEST', { playerId: player.playerId, boardId, turnTimeMs, forceTakeover, currentPlayerRoom: this.playerRoom.get(player.playerId) || null });
+    if (this.playerRoom.has(player.playerId)) {
+      if (forceTakeover) {
+        this.forceDisconnectPlayer(player.playerId, 'quick_match_force_takeover');
+      } else {
+        warn('CREATE_ROOM_BLOCKED_ALREADY_IN_ROOM', { playerId: player.playerId, roomId: this.playerRoom.get(player.playerId) });
+        throw new Error('该玩家已经在房间中');
+      }
+    }
 
     const candidateIndex = this.queue.findIndex((item) => item.boardId === boardId && item.turnTimeMs === turnTimeMs && item.playerId !== player.playerId);
     if (candidateIndex >= 0) {
@@ -89,6 +179,7 @@ export default class RoomManager {
         turnTimeMs
       });
       const joinResult = this.joinRoom(room.roomId, player);
+      log('QUICK_MATCH_MATCHED', { candidatePlayerId: candidate.playerId, playerId: player.playerId, room: roomSummary(joinResult.room), queueLength: this.queue.length });
       return {
         room: joinResult.room,
         playerColor: joinResult.playerColor,
@@ -97,12 +188,14 @@ export default class RoomManager {
     }
 
     this.queue.push({ ...player, boardId, turnTimeMs, queuedAt: now() });
+    log('QUICK_MATCH_ENQUEUED', { playerId: player.playerId, queue: this.queue.map((item) => ({ playerId: item.playerId, boardId: item.boardId, turnTimeMs: item.turnTimeMs, queuedAt: item.queuedAt })) });
     const { room, playerColor } = this.createRoom({ playerId: player.playerId, playerToken: player.playerToken, boardId, turnTimeMs });
     return { room, playerColor, matched: false };
   }
 
   authenticateRoomPlayer(roomId, playerId, playerToken) {
     const room = this.rooms.get(roomId);
+    log('AUTHENTICATE_ROOM_PLAYER_REQUEST', { roomId, playerId: playerId || null, existingPlayerRoom: playerId ? (this.playerRoom.get(playerId) || null) : null });
     if (!room) throw new Error('房间不存在');
     if (room.players.black && room.players.black.playerId === playerId && room.players.black.playerToken === playerToken) {
       return { room, color: COLORS.BLACK };
@@ -110,32 +203,62 @@ export default class RoomManager {
     if (room.players.white && room.players.white.playerId === playerId && room.players.white.playerToken === playerToken) {
       return { room, color: COLORS.WHITE };
     }
+    warn('AUTHENTICATE_ROOM_PLAYER_FAIL', { roomId, playerId });
     throw new Error('玩家鉴权失败');
   }
 
   subscribeRoom(roomId, ws) {
     const room = this.rooms.get(roomId);
+    log('SUBSCRIBE_ROOM_REQUEST', { roomId, playerId: ws && ws.playerId ? ws.playerId : null, existingPlayerRoom: ws && ws.playerId ? (this.playerRoom.get(ws.playerId) || null) : null });
     if (!room) throw new Error('房间不存在');
     room.subscribers.add(ws);
+    log('SUBSCRIBE_ROOM', { roomId, playerId: ws.playerId || null, subscribers: room.subscribers.size });
     return room;
   }
 
   unsubscribeSocket(ws) {
-    for (const room of this.rooms.values()) {
+    const releasedRooms = [];
+    log('UNSUBSCRIBE_SOCKET_BEGIN', { playerId: ws.playerId || null, roomId: ws.roomId || null });
+    for (const [roomId, room] of this.rooms.entries()) {
       room.subscribers.delete(ws);
+      let disconnectedColor = '';
       if (room.players.black && room.players.black.ws === ws) {
         room.players.black.online = false;
         room.players.black.ws = null;
+        disconnectedColor = COLORS.BLACK;
+        log('SOCKET_DETACHED_BLACK', { roomId, playerId: ws.playerId || null });
       }
       if (room.players.white && room.players.white.ws === ws) {
         room.players.white.online = false;
         room.players.white.ws = null;
+        disconnectedColor = COLORS.WHITE;
+        log('SOCKET_DETACHED_WHITE', { roomId, playerId: ws.playerId || null });
       }
+
+      if (!disconnectedColor) continue;
+
+      room.updatedAt = now();
+
+      if (room.phase === 'waiting') {
+        if (room.players.black) this.playerRoom.delete(room.players.black.playerId);
+        if (room.players.white) this.playerRoom.delete(room.players.white.playerId);
+        this.queue = this.queue.filter((item) => item.playerId !== ws.playerId);
+        this.rooms.delete(roomId);
+        log('WAITING_ROOM_RELEASED_ON_DISCONNECT', { roomId, disconnectedColor, playerId: ws.playerId || null, playerRoom: mapEntries(this.playerRoom), queueLength: this.queue.length });
+        releasedRooms.push({ roomId, disconnectedColor, deleted: true });
+        continue;
+      }
+
+      log('PLAYING_ROOM_SOCKET_RELEASED', { roomId, disconnectedColor, playerId: ws.playerId || null, room: roomSummary(room) });
+      releasedRooms.push({ roomId, disconnectedColor, deleted: false, room });
     }
+    log('UNSUBSCRIBE_SOCKET_END', { playerId: ws.playerId || null, releasedRooms, playerRoom: mapEntries(this.playerRoom) });
+    return releasedRooms;
   }
 
   attachSocketToPlayer(roomId, color, ws) {
     const room = this.rooms.get(roomId);
+    log('ATTACH_SOCKET_TO_PLAYER_REQUEST', { roomId, color, playerId: ws && ws.playerId ? ws.playerId : null, existingPlayerRoom: ws && ws.playerId ? (this.playerRoom.get(ws.playerId) || null) : null });
     if (!room) throw new Error('房间不存在');
     const seat = room.players[color];
     if (!seat) throw new Error('该座位没有玩家');
@@ -143,14 +266,17 @@ export default class RoomManager {
     seat.online = true;
     room.subscribers.add(ws);
     room.updatedAt = now();
+    log('ATTACH_SOCKET_TO_PLAYER', { roomId, color, playerId: seat.playerId, subscribers: room.subscribers.size });
     return room;
   }
 
   applyAction(roomId, playerId, playerToken, action) {
     const { room, color } = this.authenticateRoomPlayer(roomId, playerId, playerToken);
+    log('APPLY_ACTION_REQUEST', { roomId, playerId, color, actionType: action && action.type ? action.type : null, action });
     const snapshot = room.state.applyAction({ ...action, playerColor: color });
     room.updatedAt = now();
     if (snapshot.phase === 'ended') room.phase = 'ended';
+    log('APPLY_ACTION_SUCCESS', { roomId, playerId, color, phase: room.phase, snapshotVersion: snapshot.version, currentPlayer: snapshot.currentPlayer });
     return { room, color, snapshot };
   }
 
@@ -171,13 +297,18 @@ export default class RoomManager {
 
   cleanup() {
     const threshold = now() - this.matchQueueExpireMs;
+    const oldQueueLength = this.queue.length;
     this.queue = this.queue.filter((item) => item.queuedAt >= threshold);
+    if (this.queue.length !== oldQueueLength) {
+      log('CLEANUP_QUEUE_EXPIRED', { before: oldQueueLength, after: this.queue.length, queue: this.queue.map((item) => ({ playerId: item.playerId, boardId: item.boardId, turnTimeMs: item.turnTimeMs, queuedAt: item.queuedAt })) });
+    }
 
     for (const [roomId, room] of this.rooms.entries()) {
       if (room.updatedAt >= now() - this.roomExpireMs) continue;
       this.rooms.delete(roomId);
       if (room.players.black) this.playerRoom.delete(room.players.black.playerId);
       if (room.players.white) this.playerRoom.delete(room.players.white.playerId);
+      log('CLEANUP_ROOM_EXPIRED', { roomId, playerRoom: mapEntries(this.playerRoom) });
     }
   }
 
@@ -191,6 +322,13 @@ export default class RoomManager {
       room.state.forceTimeoutLose(loser);
       room.phase = 'ended';
       room.updatedAt = now();
+      if (room.players.black && !room.players.black.online && !room.players.black.ws && this.playerRoom.get(room.players.black.playerId) === room.roomId) {
+        this.playerRoom.delete(room.players.black.playerId);
+      }
+      if (room.players.white && !room.players.white.online && !room.players.white.ws && this.playerRoom.get(room.players.white.playerId) === room.roomId) {
+        this.playerRoom.delete(room.players.white.playerId);
+      }
+      log('TURN_TIMEOUT_FORCE_LOSE', { roomId: room.roomId, loser, room: roomSummary(room), playerRoom: mapEntries(this.playerRoom) });
       updates.push(room);
     }
     return updates;

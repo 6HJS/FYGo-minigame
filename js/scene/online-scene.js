@@ -10,7 +10,7 @@ export default class OnlineScene {
     this.onlineClient = onlineClient;
     this.homeScene = null;
     this.bgm = 'audio/bgm_title.mp3';
-    this.statusText = '服务器权威房间模式（云托管）';
+    this.statusText = '服务器权威房间模式（云托管，已启用自动挂断与多设备测试）';
     this.roomId = '';
     this.playerColor = '';
 
@@ -22,7 +22,11 @@ export default class OnlineScene {
     }
   }
 
-  onLeave() {}
+  onLeave() {
+    if (this.onlineClient && typeof this.onlineClient.autoHangup === 'function') {
+      this.onlineClient.autoHangup('leave_online_scene');
+    }
+  }
 
   handleClientStatus(payload) {
     if (!payload) return;
@@ -33,10 +37,11 @@ export default class OnlineScene {
 
   handleClientMessage(payload) {
     if (!payload) return;
-    if (payload.type === 'room_state' && payload.room) {
+    if ((payload.type === 'room_state' || payload.type === 'presence') && payload.room) {
       const room = payload.room;
       this.roomId = room.roomId || this.roomId;
-      this.statusText = `房间 ${this.roomId} | ${room.phase || 'waiting'} | 回合 ${room.state && room.state.turnNumber ? room.state.turnNumber : 0}`;
+      const colorText = this.playerColor ? ` | 你执${this.playerColor === 'black' ? '黑' : '白'}` : '';
+      this.statusText = `房间 ${this.roomId} | ${room.phase || 'waiting'}${colorText}`;
     } else if (payload.type === 'room_joined') {
       this.statusText = `加入房间 ${payload.roomId}`;
     } else if (payload.type === 'error') {
@@ -89,7 +94,9 @@ export default class OnlineScene {
           const result = await this.onlineClient.joinRoom(roomId);
           this.roomId = result.roomId || roomId;
           this.playerColor = result.playerColor || '';
-          this.statusText = `已加入房间 ${this.roomId}，你执${this.playerColor === 'black' ? '黑' : '白'}`;
+          this.statusText = result.subscriptionPending
+            ? `已加入房间 ${this.roomId}，正在同步...`
+            : `已加入房间 ${this.roomId}，你执${this.playerColor === 'black' ? '黑' : '白'}`;
         } catch (err) {
           this.statusText = `加入失败：${err && err.message ? err.message : '未知错误'}`;
         }
