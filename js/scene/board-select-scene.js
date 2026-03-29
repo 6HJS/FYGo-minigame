@@ -46,6 +46,10 @@ export default class BoardSelectScene {
     this.boards = [square9, square13, square15, square17, square19, heart, dumbbell, poll, diamond, cross, butterfly, hourglass, ring, arrow, clover, crown, crescent, star, temple, doublemoon, trident, fan, gear, lantern, bridge, snowflake, anchor, iris, worldmap];
     this.currentIndex = 0;
     this.niuCrossOpeningEnabled = false;
+    this.touchStartX = 0;
+    this.touchStartY = 0;
+    this.touchMoved = false;
+    this.swipeHandled = false;
 
     this.initLayout();
   }
@@ -137,6 +141,11 @@ export default class BoardSelectScene {
     const x = touch.clientX;
     const y = touch.clientY;
 
+    this.touchStartX = x;
+    this.touchStartY = y;
+    this.touchMoved = false;
+    this.swipeHandled = false;
+
     if (inRect(x, y, this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h)) {
       if (this.homeScene) this.sceneManager.switchTo(this.homeScene);
       return;
@@ -144,26 +153,52 @@ export default class BoardSelectScene {
 
     if (inRect(x, y, this.leftArrowRect.x, this.leftArrowRect.y, this.leftArrowRect.w, this.leftArrowRect.h)) {
       this.moveSelection(-1);
+      this.swipeHandled = true;
       return;
     }
 
     if (inRect(x, y, this.rightArrowRect.x, this.rightArrowRect.y, this.rightArrowRect.w, this.rightArrowRect.h)) {
       this.moveSelection(1);
+      this.swipeHandled = true;
       return;
     }
 
     if (inRect(x, y, this.niuCrossToggleRect.x, this.niuCrossToggleRect.y, this.niuCrossToggleRect.w, this.niuCrossToggleRect.h)) {
       this.niuCrossOpeningEnabled = !this.niuCrossOpeningEnabled;
+      this.swipeHandled = true;
       return;
     }
 
     if (inRect(x, y, this.confirmBtn.x, this.confirmBtn.y, this.confirmBtn.w, this.confirmBtn.h)) {
       this.confirmBoard();
+      this.swipeHandled = true;
     }
   }
 
-  onTouchMove() {}
-  onTouchEnd() {}
+  onTouchMove(e) {
+    if (!e.touches || e.touches.length === 0 || this.swipeHandled) return;
+    const touch = e.touches[0];
+    const dx = touch.clientX - this.touchStartX;
+    const dy = touch.clientY - this.touchStartY;
+
+    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+      this.touchMoved = true;
+    }
+
+    if (!inRect(this.touchStartX, this.touchStartY, this.previewRect.x, this.previewRect.y, this.previewRect.w, this.previewRect.h)) {
+      return;
+    }
+
+    if (Math.abs(dx) > 36 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+      this.moveSelection(dx > 0 ? -1 : 1);
+      this.swipeHandled = true;
+    }
+  }
+
+  onTouchEnd() {
+    this.touchMoved = false;
+    this.swipeHandled = false;
+  }
   update() {}
 
   renderArrow(rect, symbol) {
@@ -181,12 +216,14 @@ export default class BoardSelectScene {
     const rows = shape.length;
     const cols = shape[0].length;
     const cellSize = Math.min(
-      (this.previewRect.w - 44) / cols,
-      (this.previewRect.h - 70) / rows
+      (this.previewRect.w - 56) / Math.max(1, cols - 1),
+      (this.previewRect.h - 92) / Math.max(1, rows - 1)
     );
 
-    const offsetX = this.previewRect.x + (this.previewRect.w - cols * cellSize) / 2;
-    const offsetY = this.previewRect.y + 38 + (this.previewRect.h - 76 - rows * cellSize) / 2;
+    const gridWidth = (cols - 1) * cellSize;
+    const gridHeight = (rows - 1) * cellSize;
+    const offsetX = this.previewRect.x + (this.previewRect.w - gridWidth) / 2;
+    const offsetY = this.previewRect.y + 48 + (this.previewRect.h - 96 - gridHeight) / 2;
 
     ctx.save();
     ctx.fillStyle = '#f1d6a2';
@@ -201,22 +238,45 @@ export default class BoardSelectScene {
     ctx.textBaseline = 'middle';
     ctx.fillText(board.name, SCREEN_WIDTH / 2, this.previewRect.y + 24);
 
+    ctx.strokeStyle = '#6d5127';
+    ctx.lineWidth = Math.max(1.2, cellSize * 0.09);
+    ctx.lineCap = 'round';
+
+    const pointAt = (r, c) => ({ x: offsetX + c * cellSize, y: offsetY + r * cellSize });
+
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         if (shape[r][c] !== 1) continue;
-        const x = offsetX + c * cellSize;
-        const y = offsetY + r * cellSize;
-        ctx.fillStyle = '#e8bf79';
-        ctx.fillRect(x, y, cellSize, cellSize);
-        ctx.strokeStyle = '#7a5a2b';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x, y, cellSize, cellSize);
+        const p = pointAt(r, c);
 
-        const cx = x + cellSize / 2;
-        const cy = y + cellSize / 2;
-        const radius = Math.max(1.5, cellSize * 0.08);
+        if (c + 1 < cols && shape[r][c + 1] === 1) {
+          const p2 = pointAt(r, c + 1);
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p2.x, p2.y);
+          ctx.stroke();
+        }
+
+        if (r + 1 < rows && shape[r + 1][c] === 1) {
+          const p2 = pointAt(r + 1, c);
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p2.x, p2.y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    const centerRow = Math.round((rows - 1) / 2);
+    const centerCol = Math.round((cols - 1) / 2);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (shape[r][c] !== 1) continue;
+        const p = pointAt(r, c);
+        const isTengen = r === centerRow && c === centerCol;
+        const radius = isTengen ? Math.max(2.8, cellSize * 0.14) : Math.max(1.2, cellSize * 0.055);
         ctx.beginPath();
-        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
         ctx.fillStyle = '#2c1e12';
         ctx.fill();
       }
@@ -224,6 +284,7 @@ export default class BoardSelectScene {
 
     ctx.restore();
   }
+
 
 
   drawNiuCrossToggle() {
