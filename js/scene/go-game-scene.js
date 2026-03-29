@@ -105,6 +105,17 @@ export default class GoGameScene {
     this.replayControls = null;
 
     this.initSafeLayout();
+    this.detachOnlineClientListeners();
+    this.isOnlineMode = false;
+    this.onlineClient = null;
+    this.onlineRoomId = '';
+    this.onlinePlayerColor = '';
+    this.onlineRoomState = null;
+    this.onlineActionPending = false;
+    this.onlineLastVersion = 0;
+    this.onlinePendingMove = null;
+    this.boundOnlineClientMessage = null;
+    this.boundOnlineClientStatus = null;
     this.resetGame();
   }
 
@@ -406,6 +417,7 @@ export default class GoGameScene {
   }
 
   startTutorial(level, tutorialScene, tutorialIndex = 0) {
+    this.clearOnlineMode();
     this.isTutorialMode = true;
     this.tutorialLevel = level;
     this.tutorialScene = tutorialScene || null;
@@ -1810,7 +1822,213 @@ export default class GoGameScene {
     this.clearPendingSwapCardSelection();
   }
 
+  attachOnlineClientListeners() {
+    if (!this.onlineClient) return;
+    if (!this.boundOnlineClientMessage) this.boundOnlineClientMessage = this.handleOnlineClientMessage.bind(this);
+    if (!this.boundOnlineClientStatus) this.boundOnlineClientStatus = this.handleOnlineClientStatus.bind(this);
+    if (typeof this.onlineClient.onMessage === 'function') this.onlineClient.onMessage(this.boundOnlineClientMessage);
+    if (typeof this.onlineClient.onStatus === 'function') this.onlineClient.onStatus(this.boundOnlineClientStatus);
+  }
+
+  detachOnlineClientListeners() {
+    if (!this.onlineClient) return;
+    if (this.boundOnlineClientMessage && typeof this.onlineClient.offMessage === 'function') {
+      this.onlineClient.offMessage(this.boundOnlineClientMessage);
+    }
+    if (this.boundOnlineClientStatus && typeof this.onlineClient.offStatus === 'function') {
+      this.onlineClient.offStatus(this.boundOnlineClientStatus);
+    }
+  }
+
+  handleOnlineClientStatus(payload) {
+    if (!this.isOnlineMode || !payload) return;
+    if (payload.type === 'socket_close') this.statusMessage = '连接已断开，等待重连';
+    else if (payload.type === 'socket_error') this.statusMessage = '连接失败，请稍后重试';
+  }
+
+  handleOnlineClientMessage(payload) {
+    if (!this.isOnlineMode || !payload) return;
+    if (payload.type === 'error') {
+      this.handleOnlineError(payload.message || '服务器返回错误');
+      return;
+    }
+    if (payload.type === 'room_state' && payload.room) {
+      const roomId = String((payload.room && payload.room.roomId) || '').trim().toUpperCase();
+      const currentRoomId = String(this.onlineRoomId || '').trim().toUpperCase();
+      if (!currentRoomId || roomId !== currentRoomId) return;
+      this.applyOnlineRoom(payload.room, this.onlinePlayerColor);
+      return;
+    }
+    if (payload.type === 'presence') {
+      const roomId = String((payload.room && payload.room.roomId) || payload.roomId || '').trim().toUpperCase();
+      const currentRoomId = String(this.onlineRoomId || '').trim().toUpperCase();
+      if (!currentRoomId || roomId !== currentRoomId) return;
+      if (payload.room) {
+        this.applyOnlineRoom(payload.room, this.onlinePlayerColor);
+      }
+      return;
+    }
+  }
+
+  startOnlineStatePolling() {}
+
+  stopOnlineStatePolling() {
+    if (this.onlineStatePollTimer) {
+      clearInterval(this.onlineStatePollTimer);
+      this.onlineStatePollTimer = null;
+    }
+  }
+
+  configureOnlineMatch(options = {}) {
+    const room = options.room || null;
+    this.detachOnlineClientListeners();
+    this.stopOnlineStatePolling();
+    this.isOnlineMode = true;
+    this.onlineClient = options.onlineClient || this.onlineClient || null;
+    this.onlineRoomId = room && room.roomId ? room.roomId : (options.roomId || this.onlineRoomId || '');
+    this.onlinePlayerColor = options.playerColor || this.onlinePlayerColor || '';
+    this.onlineActionPending = false;
+    this.onlinePendingMove = null;
+    this.returnScene = this.onlineScene || this.returnScene || this.homeScene || null;
+    this.attachOnlineClientListeners();
+    if (room) this.applyOnlineRoom(room, this.onlinePlayerColor);
+    this.startOnlineStatePolling();
+  }
+
+  clearOnlineMode() {
+    this.detachOnlineClientListeners();
+    this.stopOnlineStatePolling();
+    this.isOnlineMode = false;
+    this.onlineRoomId = '';
+    this.onlinePlayerColor = '';
+    this.onlineRoomState = null;
+    this.onlineActionPending = false;
+    this.onlineLastVersion = 0;
+    this.onlinePendingMove = null;
+  }
+
+  getOnlinePlayerColorConst() {
+    return this.onlinePlayerColor === 'white' ? WHITE : BLACK;
+  }
+
+  applyOnlineRoom(room, playerColor = this.onlinePlayerColor) {
+    if (!room) return;
+    if (playerColor) this.onlinePlayerColor = playerColor;
+    if (room.roomId) this.onlineRoomId = room.roomId;
+    this.onlineRoomState = room;
+    if (this.isOnlineMode && !this.onlineStatePollTimer) this.startOnlineStatePolling();
+    const snapshot = room.state || {};
+    const version = Number(snapshot.version || 0);
+    if (version && version < this.onlineLastVersion) return;
+    this.onlineLastVersion = version || this.onlineLastVersion;
+
+    const boardSize = Number(snapshot.size || 0);
+    if (boardSize > 0 && boardSize !== BOARD_ROWS) {
+      // board config should already be set by online-scene.enterGameScene
+      this.resetGame();
+    }
+
+    const nextBoard = Array.from({ length: BOARD_ROWS }, (_, row) =>
+      Array.from({ length: BOARD_COLS }, (_, col) =>
+        BOARD_SHAPE[row][col] === 1 ? EMPTY : INVALID
+      )
+    );
+    const remoteBoard = Array.isArray(snapshot.board) ? snapshot.board : [];
+    for (let row = 0; row < Math.min(BOARD_ROWS, remoteBoard.length); row++) {
+      const remoteRow = Array.isArray(remoteBoard[row]) ? remoteBoard[row] : [];
+      for (let col = 0; col < Math.min(BOARD_COLS, remoteRow.length); col++) {
+        if (BOARD_SHAPE[row][col] !== 1) continue;
+        const value = remoteRow[col];
+        if (value === 'black') nextBoard[row][col] = createPiece(BLACK, 'normal', null, `${row}_${col}_b`);
+        else if (value === 'white') nextBoard[row][col] = createPiece(WHITE, 'normal', null, `${row}_${col}_w`);
+      }
+    }
+    this.board = nextBoard;
+    this.captureCounts = snapshot.captures ? {
+      black: Number(snapshot.captures.black || 0),
+      white: Number(snapshot.captures.white || 0)
+    } : { black: 0, white: 0 };
+    this.currentPlayer = snapshot.currentPlayer === 'white' ? WHITE : BLACK;
+    this.syncActivePlayerCardState();
+    this.lastMove = null;
+    this.lastCaptured = [];
+    this.pendingPlacement = null;
+    this.directionButtons = null;
+    this.pendingConfirmPlacement = null;
+
+    const remainMs = snapshot.deadlineAt ? Math.max(0, Number(snapshot.deadlineAt) - Date.now()) : Number(room.turnTimeMs || 30000);
+    const fullTurnMs = Number(room.turnTimeMs || 30000);
+    this.turnTimers = { black: fullTurnMs, white: fullTurnMs };
+    const activeKey = this.currentPlayer === WHITE ? 'white' : 'black';
+    this.turnTimers[activeKey] = remainMs;
+    this.lastTimerUpdateAt = Date.now();
+
+    if (snapshot.phase === 'ended' || room.phase === 'ended') {
+      this.gameOver = true;
+      this.winner = snapshot.winner === 'white' ? WHITE : (snapshot.winner === 'black' ? BLACK : null);
+      const winnerText = this.winner ? this.getColorName(this.winner) : '对局结束';
+      const reason = snapshot.endedReason || '服务器结算';
+      this.statusMessage = this.winner ? `${winnerText}获胜（${reason}）` : `对局结束（${reason}）`;
+      this.victoryDialog = {
+        title: '在线对局结束',
+        message: this.winner ? `${winnerText}赢了` : '对局结束',
+        detail: `结束原因：${reason}`,
+        confirmText: '返回在线大厅',
+        reviewText: ''
+      };
+    } else {
+      this.gameOver = false;
+      this.victoryDialog = null;
+      const myTurn = this.currentPlayer === this.getOnlinePlayerColorConst();
+      const phaseText = room.phase === 'waiting' ? '等待对手加入' : (myTurn ? '轮到你落子' : '等待对手落子');
+      const pendingText = this.onlineActionPending ? '（落子已发送）' : '';
+      this.statusMessage = `在线房间 ${this.onlineRoomId}｜${phaseText}${pendingText}`;
+    }
+
+    if (this.onlinePendingMove && this.board[this.onlinePendingMove.row] && this.board[this.onlinePendingMove.row][this.onlinePendingMove.col] !== EMPTY) {
+      this.onlinePendingMove = null;
+      this.onlineActionPending = false;
+    }
+  }
+
+  handleOnlineError(message) {
+    if (!this.isOnlineMode) return;
+    this.onlineActionPending = false;
+    this.onlinePendingMove = null;
+    this.statusMessage = message || '服务器返回错误';
+  }
+
+  async submitOnlineMove(row, col) {
+    if (!this.isOnlineMode || !this.onlineClient) return false;
+    if (this.onlineActionPending) {
+      this.statusMessage = '上一手正在等待服务器确认';
+      return false;
+    }
+    const myColor = this.getOnlinePlayerColorConst();
+    if (this.currentPlayer !== myColor) {
+      this.statusMessage = '还没轮到你';
+      return false;
+    }
+    if (!this.isPlayablePoint(row, col) || this.board[row][col] !== EMPTY) {
+      this.statusMessage = '此处不可落子';
+      return false;
+    }
+    this.onlineActionPending = true;
+    this.onlinePendingMove = { row, col };
+    this.statusMessage = `已发送落子（${row + 1}, ${col + 1}），等待服务器确认`;
+    try {
+      await this.onlineClient.sendAction({ type: 'move', x: col, y: row });
+      return true;
+    } catch (err) {
+      this.onlineActionPending = false;
+      this.onlinePendingMove = null;
+      this.statusMessage = `在线落子失败：${err && err.message ? err.message : '未知错误'}`;
+      return false;
+    }
+  }
+
   prepareMatch(options = {}) {
+    this.clearOnlineMode();
     this.isTutorialMode = false;
     this.tutorialLevel = null;
     this.tutorialScene = null;
@@ -4623,18 +4841,32 @@ export default class GoGameScene {
     }
 
     if (inRect(x, y, this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h)) {
-      this.requestScoreCount();
+      if (this.isOnlineMode) this.statusMessage = '在线模式暂未接入申请点目';
+      else this.requestScoreCount();
       return;
     }
 
     if (inRect(x, y, this.undoRequestBtn.x, this.undoRequestBtn.y, this.undoRequestBtn.w, this.undoRequestBtn.h)) {
-      this.requestUndoTurn();
+      if (this.isOnlineMode) this.statusMessage = '在线模式暂未接入申请悔棋';
+      else this.requestUndoTurn();
       return;
     }
 
     if (inRect(x, y, this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h)) {
-      if (this.isTutorialMode) this.reloadTutorialLevel();
+      if (this.isOnlineMode) {
+        this.statusMessage = '在线模式下请返回在线大厅后再重开';
+      } else if (this.isTutorialMode) this.reloadTutorialLevel();
       else this.resetGame();
+      return;
+    }
+
+    if (this.isOnlineMode) {
+      if (this.gameOver) {
+        return;
+      }
+      const point = this.screenToBoard(x, y);
+      if (!point) return;
+      this.submitOnlineMove(point.row, point.col);
       return;
     }
 
@@ -6774,6 +7006,17 @@ export default class GoGameScene {
   }
 
   update() {
+    if (this.isOnlineMode) {
+      if (this.onlineRoomState && this.onlineRoomState.state && this.onlineRoomState.state.deadlineAt) {
+        const remainMs = Math.max(0, Number(this.onlineRoomState.state.deadlineAt) - Date.now());
+        const fullTurnMs = Number(this.onlineRoomState.turnTimeMs || 30000);
+        this.turnTimers = { black: fullTurnMs, white: fullTurnMs };
+        const activeKey = this.currentPlayer === WHITE ? 'white' : 'black';
+        this.turnTimers[activeKey] = remainMs;
+      }
+      this.lastTimerUpdateAt = Date.now();
+      return;
+    }
     this.syncActiveTurnTimer();
     this.updateTurnPressure();
   }
@@ -6825,6 +7068,10 @@ export default class GoGameScene {
       drawButton(this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h, scoreBtnColor, this.scoreSummary ? '点目结果' : '无点目结果', 18, scoreBtnTextColor);
       drawButton(this.undoRequestBtn.x, this.undoRequestBtn.y, this.undoRequestBtn.w, this.undoRequestBtn.h, '#bdc3c7', '复盘中', 18, '#5f6a6a');
       drawButton(this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h, '#8e44ad', '终局复盘', 18, '#ffffff');
+    } else if (this.isOnlineMode) {
+      drawButton(this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h, '#7f8c8d', '在线点目', 18, '#ecf0f1');
+      drawButton(this.undoRequestBtn.x, this.undoRequestBtn.y, this.undoRequestBtn.w, this.undoRequestBtn.h, '#7f8c8d', '在线悔棋', 18, '#ecf0f1');
+      drawButton(this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h, '#7f8c8d', '返回重开', 18, '#ecf0f1');
     } else {
       drawButton(this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h, '#f1c40f', '申请点目', 20, '#3b2a18');
       drawButton(this.undoRequestBtn.x, this.undoRequestBtn.y, this.undoRequestBtn.w, this.undoRequestBtn.h, '#e67e22', '申请悔棋', 20, '#3b2a18');
@@ -6853,7 +7100,7 @@ export default class GoGameScene {
     const isBlack = this.getColorKey(color) === 'black';
     const sideKey = isBlack ? 'black' : 'white';
     const sideColor = isBlack ? BLACK : WHITE;
-    const loadout = this.cardLoadoutByColor ? this.cardLoadoutByColor[sideKey] : [];
+    const loadout = this.isOnlineMode ? [] : (this.cardLoadoutByColor ? this.cardLoadoutByColor[sideKey] : []);
     const layout = this.getMiniCardPreviewLayout(sideKey);
     const { x, y, w, h } = layout;
     const isCurrentTurn = this.currentPlayer === sideColor;

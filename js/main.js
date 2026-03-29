@@ -30,7 +30,7 @@ export default class Main {
     );
 
     this.onlineClient = new OnlineClient();
-    this.onlineScene = new OnlineScene(this.sceneManager, this.onlineClient);
+    this.onlineScene = new OnlineScene(this.sceneManager, this.onlineClient, this.goGameScene);
 
     this.homeScene = new HomeScene(
       this.sceneManager,
@@ -41,6 +41,7 @@ export default class Main {
 
     this.tutorialScene.homeScene = this.homeScene;
     this.onlineScene.homeScene = this.homeScene;
+    this.goGameScene.onlineScene = this.onlineScene;
     this.goGameScene.homeScene = this.homeScene;
     this.boardSelectScene.homeScene = this.homeScene;
     this.boardSelectScene.victorySelectScene = this.victorySelectScene;

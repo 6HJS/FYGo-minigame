@@ -1,18 +1,36 @@
 import { drawButton, inRect } from '../utils/ui';
 
+const square9 = require('../data/boards/square9.js');
+const square13 = require('../data/boards/square13.js');
+const square15 = require('../data/boards/square15.js');
+const square17 = require('../data/boards/square17.js');
+const square19 = require('../data/boards/square19.js');
+
+const ONLINE_BOARD_MAP = {
+  board_9x9: square9,
+  board_13x13: square13,
+  board_15x15: square15,
+  board_17x17: square17,
+  board_19x19: square19
+};
+
 const ctx = canvas.getContext('2d');
 const SCREEN_WIDTH = canvas.width;
 const SCREEN_HEIGHT = canvas.height;
 
 export default class OnlineScene {
-  constructor(sceneManager, onlineClient) {
+  constructor(sceneManager, onlineClient, gameScene = null) {
     this.sceneManager = sceneManager;
     this.onlineClient = onlineClient;
+    this.gameScene = gameScene;
     this.homeScene = null;
     this.bgm = 'audio/bgm_title.mp3';
     this.statusText = '服务器权威房间模式（云托管，已启用自动挂断与多设备测试）';
     this.roomId = '';
     this.playerColor = '';
+    this.skipAutoHangupOnLeave = false;
+    this.enteredGameRoomId = '';
+    this.lastPresenceFetchAt = 0;
 
     if (this.onlineClient) {
       this.boundMessage = this.handleClientMessage.bind(this);
@@ -23,9 +41,59 @@ export default class OnlineScene {
   }
 
   onLeave() {
+    if (this.skipAutoHangupOnLeave) {
+      this.skipAutoHangupOnLeave = false;
+      return;
+    }
+    this.enteredGameRoomId = '';
+    this.lastPresenceFetchAt = 0;
     if (this.onlineClient && typeof this.onlineClient.autoHangup === 'function') {
       this.onlineClient.autoHangup('leave_online_scene');
     }
+  }
+
+  onEnter() {
+    this.enteredGameRoomId = '';
+    this.lastPresenceFetchAt = 0;
+    if (this.gameScene && this.gameScene.isOnlineMode && this.gameScene.onlineRoomId) {
+      this.roomId = this.gameScene.onlineRoomId;
+    }
+  }
+
+  enterGameScene(room) {
+    if (!room || !room.roomId || !this.gameScene) return;
+    if (this.enteredGameRoomId === room.roomId && this.sceneManager.currentScene === this.gameScene) return;
+
+    this.enteredGameRoomId = room.roomId;
+    this.skipAutoHangupOnLeave = true;
+
+    if (typeof this.gameScene.setBoardConfig === 'function') {
+      const boardId = room.boardId || 'board_9x9';
+      const boardConfig = ONLINE_BOARD_MAP[boardId] || square9;
+      if (boardConfig) {
+        this.gameScene.setBoardConfig(boardConfig);
+      } else if (typeof this.gameScene.resetGame === 'function') {
+        this.gameScene.resetGame();
+      }
+    }
+
+    if (typeof this.gameScene.configureOnlineMatch === 'function') {
+      this.gameScene.configureOnlineMatch({
+        room,
+        onlineClient: this.onlineClient,
+        playerColor: this.playerColor || ''
+      });
+    } else {
+      this.gameScene.isOnlineMode = true;
+      this.gameScene.onlineClient = this.onlineClient;
+      this.gameScene.onlineRoomId = room.roomId;
+      this.gameScene.onlinePlayerColor = this.playerColor || '';
+      this.gameScene.statusMessage = room.phase === 'waiting'
+        ? `在线房间 ${room.roomId}，等待对手加入`
+        : `在线房间 ${room.roomId}，你执${this.playerColor === 'black' ? '黑' : '白'}`;
+    }
+
+    this.sceneManager.switchTo(this.gameScene);
   }
 
   handleClientStatus(payload) {
@@ -37,15 +105,45 @@ export default class OnlineScene {
 
   handleClientMessage(payload) {
     if (!payload) return;
-    if ((payload.type === 'room_state' || payload.type === 'presence') && payload.room) {
+    if (payload.type === 'room_state' && payload.room) {
       const room = payload.room;
       this.roomId = room.roomId || this.roomId;
       const colorText = this.playerColor ? ` | 你执${this.playerColor === 'black' ? '黑' : '白'}` : '';
       this.statusText = `房间 ${this.roomId} | ${room.phase || 'waiting'}${colorText}`;
+      if (this.gameScene && this.gameScene.isOnlineMode && this.gameScene.onlineRoomId === room.roomId && typeof this.gameScene.applyOnlineRoom === 'function') {
+        this.gameScene.applyOnlineRoom(room, this.playerColor || '');
+      }
+      if (this.playerColor && room.phase === 'playing') {
+        this.enterGameScene(room);
+      }
+    } else if (payload.type === 'presence') {
+      const roomId = String(payload.roomId || (payload.room && payload.room.roomId) || '').trim().toUpperCase();
+      const currentRoomId = String(this.roomId || '').trim().toUpperCase();
+      if (payload.room && roomId && currentRoomId && roomId === currentRoomId) {
+        const room = payload.room;
+        this.statusText = `房间 ${room.roomId} | ${room.phase || 'waiting'}`;
+        if (this.playerColor && room.phase === 'playing') {
+          this.enterGameScene(room);
+        }
+        return;
+      }
+      if (
+        roomId && currentRoomId && roomId === currentRoomId &&
+        this.onlineClient && typeof this.onlineClient.fetchRoomState === 'function'
+      ) {
+        const now = Date.now();
+        if (!this.lastPresenceFetchAt || now - this.lastPresenceFetchAt > 1500) {
+          this.lastPresenceFetchAt = now;
+          this.onlineClient.fetchRoomState(roomId).catch(() => {});
+        }
+      }
     } else if (payload.type === 'room_joined') {
       this.statusText = `加入房间 ${payload.roomId}`;
     } else if (payload.type === 'error') {
       this.statusText = payload.message || '服务器返回错误';
+      if (this.gameScene && this.gameScene.isOnlineMode && typeof this.gameScene.handleOnlineError === 'function') {
+        this.gameScene.handleOnlineError(payload.message || '服务器返回错误');
+      }
     }
   }
 
@@ -55,7 +153,7 @@ export default class OnlineScene {
       const result = await this.onlineClient.createRoom();
       this.roomId = result.roomId || '';
       this.playerColor = result.playerColor || '';
-      this.statusText = `已创建房间 ${this.roomId}，执黑先行`;
+      this.statusText = `已创建房间 ${this.roomId}，执黑先行，等待白棋加入`;
     } catch (err) {
       this.statusText = `创建失败：${err && err.message ? err.message : '未知错误'}`;
     }
@@ -67,7 +165,12 @@ export default class OnlineScene {
       const result = await this.onlineClient.quickMatch();
       this.roomId = result.roomId || '';
       this.playerColor = result.playerColor || '';
-      this.statusText = `匹配成功：房间 ${this.roomId}，你执${this.playerColor === 'black' ? '黑' : '白'}`;
+      if (result.room && result.room.phase === 'playing') {
+        this.statusText = `匹配成功：房间 ${this.roomId}，你执${this.playerColor === 'black' ? '黑' : '白'}`;
+        this.enterGameScene(result.room);
+      } else {
+        this.statusText = `已进入匹配队列 / 房间 ${this.roomId}，等待对手加入`;
+      }
     } catch (err) {
       this.statusText = `匹配失败：${err && err.message ? err.message : '未知错误'}`;
     }
@@ -97,6 +200,9 @@ export default class OnlineScene {
           this.statusText = result.subscriptionPending
             ? `已加入房间 ${this.roomId}，正在同步...`
             : `已加入房间 ${this.roomId}，你执${this.playerColor === 'black' ? '黑' : '白'}`;
+          if (result.room && result.room.phase === 'playing') {
+            this.enterGameScene(result.room);
+          }
         } catch (err) {
           this.statusText = `加入失败：${err && err.message ? err.message : '未知错误'}`;
         }
