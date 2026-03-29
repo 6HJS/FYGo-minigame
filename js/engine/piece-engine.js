@@ -11,14 +11,20 @@ function getOffsetsByDir(offsetsByDir, dir) {
   return offsetsByDir[dir] || offsetsByDir.U || [];
 }
 
-function getAreaByOffsets(scene, row, col, offsets) {
+function getAreaByOffsets(scene, row, col, offsets, options = {}) {
   const result = [];
   const seen = new Set();
+  const allowOutsideCurrentShape = !!options.allowOutsideCurrentShape;
 
   for (const [dr, dc] of offsets) {
     const nr = row + dr;
     const nc = col + dc;
-    if (!scene.isBoardShapeCell(nr, nc)) continue;
+
+    if (allowOutsideCurrentShape) {
+      if (!scene.isInside(nr, nc)) continue;
+    } else if (!scene.isBoardShapeCell(nr, nc)) {
+      continue;
+    }
 
     const key = `${nr},${nc}`;
     if (seen.has(key)) continue;
@@ -121,6 +127,31 @@ function handleBlastArea(scene, row, col, piece, pieceDef) {
   };
 }
 
+function handleRaiseFrontCells(scene, row, col, piece, pieceDef) {
+  const rule = pieceDef.behavior || {};
+  const offsets = getOffsetsByDir(rule.offsetsByDir, piece.dir);
+  const area = getAreaByOffsets(scene, row, col, offsets, { allowOutsideCurrentShape: true });
+
+  let createdCellsCount = 0;
+
+  for (const [r, c] of area) {
+    if (scene.restorePlayableCell(r, c)) {
+      createdCellsCount += 1;
+    }
+  }
+
+  const downgrade = rule.degradeTo || 'normal';
+  scene.board[row][col] = createPiece(piece.color, downgrade, null, piece.id);
+  scene.lastMove = { row, col };
+
+  return {
+    createdCellsCount,
+    raisedCount: createdCellsCount,
+    transformed: true
+  };
+}
+
+
 function handleDigFront(scene, row, col, piece, pieceDef) {
   const rule = pieceDef.behavior || {};
   const offsets = getOffsetsByDir(rule.offsetsByDir, piece.dir);
@@ -160,6 +191,9 @@ function runAdvanceForPiece(scene, row, col, piece, pieceDef) {
 
     case 'dig_front':
       return handleDigFront(scene, row, col, piece, pieceDef);
+
+    case 'raise_front_cells':
+      return handleRaiseFrontCells(scene, row, col, piece, pieceDef);
 
     case 'none':
     default:

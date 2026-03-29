@@ -284,6 +284,39 @@ module.exports = {
       behavior: { type: 'none' }
     },
     {
+      id: 'clone',
+      name: '克隆',
+      symbol: 'x2',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#00897b',
+      advanceOrder: 17,
+      behavior: { type: 'none' }
+    },
+    {
+      id: 'mountain',
+      name: '山地兵',
+      symbol: '⛰',
+      needsDirection: true,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#6d4c41',
+      advanceOrder: 18,
+      behavior: {
+        type: 'raise_front_cells',
+        degradeTo: 'normal',
+        offsetsByDir: {
+          U: [[-1,-1],[-1,0],[-1,1]],
+          D: [[1,-1],[1,0],[1,1]],
+          L: [[-1,-1],[0,-1],[1,-1]],
+          R: [[-1,1],[0,1],[1,1]]
+        }
+      }
+    },
+
+
+    {
       id: 'fortress',
       name: '堡垒兵',
       symbol: '▣',

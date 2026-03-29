@@ -53,6 +53,11 @@ export default class GoGameScene {
     this.DIRS = DIRS;
 
     this.boardConfig = boardConfig;
+    this.baseBoardShape = this.cloneBoardShape(boardConfig.shape);
+    this.boardConfig.shape = this.cloneBoardShape(this.baseBoardShape);
+    BOARD_SHAPE = this.boardConfig.shape;
+    BOARD_ROWS = BOARD_SHAPE.length;
+    BOARD_COLS = BOARD_SHAPE[0].length;
     this.pieceConfig = pieceConfig;
     this.pieceMap = pieceMap;
 
@@ -742,7 +747,9 @@ export default class GoGameScene {
     if (!boardConfig || !Array.isArray(boardConfig.shape) || !boardConfig.shape.length) return;
 
     this.boardConfig = boardConfig;
-    BOARD_SHAPE = boardConfig.shape;
+    this.baseBoardShape = this.cloneBoardShape(boardConfig.shape);
+    this.boardConfig.shape = this.cloneBoardShape(this.baseBoardShape);
+    BOARD_SHAPE = this.boardConfig.shape;
     BOARD_ROWS = BOARD_SHAPE.length;
     BOARD_COLS = BOARD_SHAPE[0].length;
 
@@ -805,14 +812,134 @@ export default class GoGameScene {
     return color === BLACK ? '黑棋' : '白棋';
   }
 
+  getCloneState(color) {
+    if (!this.cloneStateByColor) {
+      this.cloneStateByColor = {
+        black: { pendingActivation: false, active: false, movesRemaining: 0, spawnedIds: [], expireAfterOpponentMove: false },
+        white: { pendingActivation: false, active: false, movesRemaining: 0, spawnedIds: [], expireAfterOpponentMove: false }
+      };
+    }
+    return this.cloneStateByColor[this.getColorKey(color)] || null;
+  }
+
+  isCloneTurnActive(color = this.currentPlayer) {
+    const state = this.getCloneState(color);
+    return !!(state && state.active && state.movesRemaining > 0);
+  }
+
+  armCloneForNextTurn(color) {
+    const state = this.getCloneState(color);
+    if (!state) return;
+    state.pendingActivation = false;
+    state.active = true;
+    state.movesRemaining = 2;
+    state.spawnedIds = [];
+    state.expireAfterOpponentMove = false;
+    const key = this.getColorKey(color);
+    if (!this.nextPieceTypeByColor) this.nextPieceTypeByColor = { black: 'normal', white: 'normal' };
+    this.nextPieceTypeByColor[key] = this.pieceConfig.defaultPieceType || 'normal';
+    if (this.currentPlayer === color) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    }
+  }
+
+  activateCloneNow(color) {
+    const state = this.getCloneState(color);
+    if (!state) return false;
+    state.pendingActivation = false;
+    state.active = true;
+    state.movesRemaining = 2;
+    state.spawnedIds = [];
+    state.expireAfterOpponentMove = false;
+    const key = this.getColorKey(color);
+    if (!this.nextPieceTypeByColor) this.nextPieceTypeByColor = { black: 'normal', white: 'normal' };
+    this.nextPieceTypeByColor[key] = this.pieceConfig.defaultPieceType || 'normal';
+    if (this.currentPlayer === color) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    }
+    return true;
+  }
+
+  activateCloneTurnIfNeeded(color) {
+    const state = this.getCloneState(color);
+    if (!state || !state.pendingActivation) return { activated: false, movesRemaining: 0 };
+    state.pendingActivation = false;
+    state.active = true;
+    state.movesRemaining = 2;
+    state.spawnedIds = [];
+    const key = this.getColorKey(color);
+    if (!this.nextPieceTypeByColor) this.nextPieceTypeByColor = { black: 'normal', white: 'normal' };
+    this.nextPieceTypeByColor[key] = this.pieceConfig.defaultPieceType || 'normal';
+    if (this.currentPlayer === color) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    }
+    return { activated: true, movesRemaining: 2 };
+  }
+
+  removeExpiredCloneSpawns(color) {
+    const state = this.getCloneState(color);
+    if (!state || !state.expireAfterOpponentMove) return { removedCount: 0 };
+    let removedCount = 0;
+    const ids = Array.isArray(state.spawnedIds) ? state.spawnedIds.slice() : [];
+    for (const id of ids) {
+      if (!id) continue;
+      const found = this.findPiecePositionById(id);
+      if (!found || !this.isPiece(found.cell)) continue;
+      const out = this.resolvePieceRemovalAt(found.row, found.col, { allowRebirth: false, scoreForColor: null });
+      if (out && out.removed) removedCount += 1;
+    }
+    state.spawnedIds = [];
+    state.expireAfterOpponentMove = false;
+    if (removedCount > 0) {
+      this.previousBoardKey = this.getBoardKey(this.board);
+    }
+    return { removedCount };
+  }
+
+  handleClonePlacementAfterCommit(row, col) {
+    const state = this.getCloneState(this.currentPlayer);
+    if (!state || !state.active || state.movesRemaining <= 0) {
+      return { consumed: false, keepTurn: false, remainingMoves: 0 };
+    }
+
+    const cell = this.isInside(row, col) ? this.board[row][col] : null;
+    if (this.isPiece(cell)) {
+      const extra = { ...cell, cloneSpawned: true };
+      delete extra.color;
+      delete extra.type;
+      delete extra.dir;
+      delete extra.id;
+      this.board[row][col] = createPiece(cell.color, cell.type, cell.dir, cell.id, extra);
+      if (cell.id) {
+        state.spawnedIds.push(cell.id);
+      }
+    }
+
+    state.movesRemaining = Math.max(0, Number(state.movesRemaining || 0) - 1);
+    if (state.movesRemaining > 0) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      return { consumed: true, keepTurn: true, remainingMoves: state.movesRemaining };
+    }
+
+    state.active = false;
+    state.expireAfterOpponentMove = true;
+    return { consumed: true, keepTurn: false, remainingMoves: 0 };
+  }
+
   deepCloneStateData(data) {
     if (data == null) return data;
     return JSON.parse(JSON.stringify(data));
   }
 
+  cloneBoardShape(shape) {
+    if (!Array.isArray(shape)) return [];
+    return shape.map((row) => Array.isArray(row) ? row.slice() : []);
+  }
+
   captureUndoSnapshot() {
     return {
       board: this.cloneBoard(this.board),
+      boardShape: this.cloneBoardShape(BOARD_SHAPE),
       currentPlayer: this.currentPlayer,
       previousBoardKey: this.previousBoardKey,
       lastMove: this.lastMove ? { ...this.lastMove } : null,
@@ -827,6 +954,7 @@ export default class GoGameScene {
       lastPlagueResolution: this.deepCloneStateData(this.lastPlagueResolution),
       timeLimitEffect: this.deepCloneStateData(this.timeLimitEffect),
       turnPressure: this.deepCloneStateData(this.turnPressure),
+      cloneStateByColor: this.deepCloneStateData(this.cloneStateByColor),
       nextPieceId: this.nextPieceId,
       turnTimers: this.deepCloneStateData(this.turnTimers),
       winner: this.winner,
@@ -849,6 +977,12 @@ export default class GoGameScene {
     if (!snapshot) return false;
     const preserveReplayState = !!options.preserveReplayState;
 
+    if (snapshot.boardShape) {
+      BOARD_SHAPE = this.cloneBoardShape(snapshot.boardShape);
+      this.boardConfig.shape = BOARD_SHAPE;
+      BOARD_ROWS = BOARD_SHAPE.length;
+      BOARD_COLS = BOARD_SHAPE[0].length;
+    }
     this.board = this.cloneBoard(snapshot.board);
     this.previousBoardKey = snapshot.previousBoardKey;
     this.lastMove = snapshot.lastMove ? { ...snapshot.lastMove } : null;
@@ -877,6 +1011,10 @@ export default class GoGameScene {
       remainingMs: 0,
       displaySeconds: 0,
       pulsePhase: 0
+    };
+    this.cloneStateByColor = this.deepCloneStateData(snapshot.cloneStateByColor) || {
+      black: { pendingActivation: false, active: false, movesRemaining: 0, spawnedIds: [], expireAfterOpponentMove: false },
+      white: { pendingActivation: false, active: false, movesRemaining: 0, spawnedIds: [], expireAfterOpponentMove: false }
     };
     this.nextPieceId = snapshot.nextPieceId || 1;
     this.turnTimers = this.deepCloneStateData(snapshot.turnTimers) || { black: 300000, white: 300000 };
@@ -1589,6 +1727,8 @@ export default class GoGameScene {
     this.returnScene = this.homeScene || null;
     if (options.boardConfig) {
       this.boardConfig = options.boardConfig;
+      this.baseBoardShape = this.cloneBoardShape(this.boardConfig.shape);
+      this.boardConfig.shape = this.cloneBoardShape(this.baseBoardShape);
       BOARD_SHAPE = this.boardConfig.shape;
       BOARD_ROWS = BOARD_SHAPE.length;
       BOARD_COLS = BOARD_SHAPE[0].length;
@@ -1606,6 +1746,11 @@ export default class GoGameScene {
   }
 
   resetGame() {
+    BOARD_SHAPE = this.cloneBoardShape(this.baseBoardShape || this.boardConfig.shape);
+    this.boardConfig.shape = BOARD_SHAPE;
+    BOARD_ROWS = BOARD_SHAPE.length;
+    BOARD_COLS = BOARD_SHAPE[0].length;
+
     this.board = Array.from({ length: BOARD_ROWS }, (_, row) =>
       Array.from({ length: BOARD_COLS }, (_, col) =>
         BOARD_SHAPE[row][col] === 1 ? EMPTY : INVALID
@@ -1675,6 +1820,10 @@ export default class GoGameScene {
       remainingMs: 0,
       displaySeconds: 0,
       pulsePhase: 0
+    };
+    this.cloneStateByColor = {
+      black: { pendingActivation: false, active: false, movesRemaining: 0, spawnedIds: [], expireAfterOpponentMove: false },
+      white: { pendingActivation: false, active: false, movesRemaining: 0, spawnedIds: [], expireAfterOpponentMove: false }
     };
 
     this.calcBoardLayout();
@@ -2452,6 +2601,10 @@ export default class GoGameScene {
       this.statusMessage = `瞬移受阻，失效 ${turnStartInfo.teleportInfo.failedCount} 枚`;
     } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.movedCount > 0) {
       this.statusMessage = `瞬移发动，移动 ${turnStartInfo.teleportInfo.movedCount} 枚`;
+    } else if (turnStartInfo.cloneExpiredInfo && turnStartInfo.cloneExpiredInfo.removedCount > 0) {
+      this.statusMessage = `对手落子后，克隆出的 ${turnStartInfo.cloneExpiredInfo.removedCount} 子已自动死亡`;
+    } else if (turnStartInfo.cloneActivationInfo && turnStartInfo.cloneActivationInfo.activated) {
+      this.statusMessage = '克隆生效：本回合请连续落 2 个普通子';
     }
     if (tutorialPayload) this.handleTutorialPostAction(tutorialPayload.trigger || 'commit', tutorialPayload.piece || null);
     return turnStartInfo;
@@ -3526,11 +3679,16 @@ export default class GoGameScene {
     if (piece.type === 'gravity' || piece.type === 'repulsion' || piece.type === 'reverse' || piece.type === 'auspice') {
       this.normalizePieceAt(row, col);
     }
+    if (piece.type === 'clone') {
+      this.normalizePieceAt(row, col);
+      this.armCloneForNextTurn(piece.color);
+    }
 
-    this.advanceSpecialPieces({
+    const advancedInfo = this.advanceSpecialPieces({
       skipNewlyPlacedType: piece.type,
       skipNewlyPlacedKey: `${row},${col}`
     });
+    const mountainInfo = { createdCellsCount: Number((advancedInfo && advancedInfo.totalRaisedCells) || 0) };
 
     const contractInfo = this.resolveContracts(advanceContracts);
 
@@ -3548,19 +3706,37 @@ export default class GoGameScene {
     }
 
     const wonByCapture = this.checkVictoryAfterCapture(piece.color);
+    const cloneTurnOut = (endTurn && !wonByCapture)
+      ? (piece.type === 'clone'
+          ? { consumed: true, keepTurn: true, remainingMoves: 2 }
+          : this.handleClonePlacementAfterCommit(row, col))
+      : { consumed: false, keepTurn: false, remainingMoves: 0 };
 
-    if (endTurn && !wonByCapture) {
+    if (endTurn && !wonByCapture && !cloneTurnOut.keepTurn) {
       if (this.isTurnPressureActiveForPlayer(this.currentPlayer)) {
         this.clearTurnPressure(true);
       }
       this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
     }
 
-    const turnStartInfo = wonByCapture
-      ? { persuadedCount: 0, vanishedCount: 0, archerShotCount: 0, archerKillCount: 0, archerDisabledCount: 0, plagueInfo: { infectedCount: 0, deathCount: 0, recoverCount: 0, vanishedCount: 0 }, teleportInfo: { movedCount: 0, failedCount: 0, finishedCount: 0 } }
+    const turnStartInfo = (wonByCapture || cloneTurnOut.keepTurn)
+      ? {
+          persuadedCount: 0,
+          vanishedCount: 0,
+          archerShotCount: 0,
+          archerKillCount: 0,
+          archerDisabledCount: 0,
+          plagueInfo: { infectedCount: 0, deathCount: 0, recoverCount: 0, vanishedCount: 0 },
+          teleportInfo: { movedCount: 0, failedCount: 0, finishedCount: 0 },
+          nightmareInfo: { movedCount: 0, vanishedCount: 0 },
+          cloneExpiredInfo: { removedCount: 0 },
+          cloneActivationInfo: { activated: false, movesRemaining: 0 }
+        }
       : this.resolveTurnStartSpecials(this.currentPlayer);
 
-    if (piece.type === 'rebirth' && !endTurn) {
+    if (cloneTurnOut.keepTurn) {
+      this.statusMessage = `克隆生效：已落下 1 个克隆子，还可再落 ${cloneTurnOut.remainingMoves} 子`;
+    } else if (piece.type === 'rebirth' && !endTurn) {
       this.statusMessage = '请选择一个空位作为重生点';
     } else if (piece.type === 'archer') {
       this.statusMessage = '弓箭手已架弓，下一次轮到你时将朝指定方向射箭';
@@ -3580,6 +3756,12 @@ export default class GoGameScene {
       this.statusMessage = `瞬移受阻，失效 ${turnStartInfo.teleportInfo.failedCount} 枚`;
     } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.movedCount > 0) {
       this.statusMessage = `瞬移发动，移动 ${turnStartInfo.teleportInfo.movedCount} 枚`;
+    } else if (piece.type === 'clone') {
+      this.statusMessage = '克隆生效：请立刻连续落 2 个普通子；这两个克隆子会在对手落子后自动死亡';
+    } else if (turnStartInfo.cloneExpiredInfo && turnStartInfo.cloneExpiredInfo.removedCount > 0) {
+      this.statusMessage = `对手落子后，克隆出的 ${turnStartInfo.cloneExpiredInfo.removedCount} 子已自动死亡`;
+    } else if (turnStartInfo.cloneActivationInfo && turnStartInfo.cloneActivationInfo.activated) {
+      this.statusMessage = '克隆生效：本回合请连续落 2 个普通子';
     } else if (piece.type === 'plague') {
       this.statusMessage = plagueInfectedCount > 0
         ? `瘟疫扩散，感染 ${plagueInfectedCount} 枚棋子`
@@ -3619,6 +3801,10 @@ export default class GoGameScene {
       } else {
         this.statusMessage = '交响未触发：横线与竖线黑白数量都不相等';
       }
+    } else if (piece.type === 'mountain') {
+      this.statusMessage = mountainInfo.createdCellsCount > 0
+        ? `山地兵造地 ${mountainInfo.createdCellsCount} 格`
+        : '山地兵发动，但前方没有可修补或扩展的空白';
     } else if (piece.type === 'persuader' && !endTurn) {
       this.statusMessage = '请选择说客上下左右相邻的一枚敌子';
     } else if (piece.type === 'fog' && !endTurn) {
@@ -3966,6 +4152,8 @@ export default class GoGameScene {
     let archerShotCount = 0;
     let archerKillCount = 0;
     let archerDisabledCount = 0;
+    const cloneExpiredInfo = this.removeExpiredCloneSpawns(player);
+    const cloneActivationInfo = this.activateCloneTurnIfNeeded(player);
     const nightmareInfo = this.resolveNightmareMoves();
     const teleportInfo = this.resolveTeleportMoves();
     const plagueInfo = this.resolvePlagueInfections();
@@ -4002,7 +4190,7 @@ export default class GoGameScene {
       vanishedCount += (stabilizeOut.counted || []).length;
     }
     this.previousBoardKey = this.getBoardKey(this.board);
-    return { persuadedCount, vanishedCount, archerShotCount, archerKillCount, archerDisabledCount, plagueInfo, teleportInfo, nightmareInfo };
+    return { persuadedCount, vanishedCount, archerShotCount, archerKillCount, archerDisabledCount, plagueInfo, teleportInfo, nightmareInfo, cloneExpiredInfo, cloneActivationInfo };
   }
 
 
@@ -4697,6 +4885,13 @@ export default class GoGameScene {
   }
 
   toggleNextSpecialPiece(type) {
+    if (this.isCloneTurnActive(this.currentPlayer)) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.clearPendingSelection();
+      this.statusMessage = '克隆生效回合只能落普通子';
+      return;
+    }
+
     if (!this.hasAvailableCard(type)) {
       this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
       this.clearPendingSelection();
@@ -4712,6 +4907,16 @@ export default class GoGameScene {
     }
 
     const defaultType = this.pieceConfig.defaultPieceType || 'normal';
+    if (type === 'clone') {
+      this.markUndoSnapshot();
+      this.consumeCard('clone');
+      this.activateCloneNow(this.currentPlayer);
+      this.nextPieceType = defaultType;
+      this.statusMessage = '克隆生效：请立刻连续落 2 个带 x2 标记的克隆子；它们会在对手落子后自动死亡';
+      this.handleTutorialPostAction('commit', { type: 'clone', color: this.currentPlayer });
+      return;
+    }
+
     this.nextPieceType = this.nextPieceType === type ? defaultType : type;
 
     const pieceDef = getPieceDef(this.pieceMap, this.nextPieceType);
@@ -5379,6 +5584,16 @@ export default class GoGameScene {
       return false;
     }
 
+    if (piece.type === 'clone') {
+      this.markUndoSnapshot();
+      this.consumeCard('clone');
+      this.activateCloneNow(this.currentPlayer);
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = '克隆生效：请立刻连续落 2 个带 x2 标记的克隆子；它们会在对手落子后自动死亡';
+      this.handleTutorialPostAction('commit', { type: 'clone', color: this.currentPlayer });
+      return true;
+    }
+
     const finalPiece = { ...piece, id: piece.id || this.allocPieceId() };
     const result = this.simulatePlacePiece(this.board, row, col, finalPiece, this.currentPlayer);
 
@@ -5660,6 +5875,7 @@ export default class GoGameScene {
     let totalDisabled = 0;
     let totalDestroyedCells = 0;
     let totalDugCells = 0;
+    let totalRaisedCells = 0;
 
     for (const item of queue) {
       const cell = this.board[item.row][item.col];
@@ -5673,17 +5889,22 @@ export default class GoGameScene {
       if (out.disabledCount) totalDisabled += out.disabledCount;
       if (out.destroyedCellsCount) totalDestroyedCells += out.destroyedCellsCount;
       if (out.dugCount) totalDugCells += out.dugCount;
+      if (out.raisedCount) totalRaisedCells += out.raisedCount;
     }
 
     this.previousBoardKey = this.getBoardKey(this.board);
 
     if (totalDugCells > 0) {
       this.statusMessage = `堡垒兵挖掉 ${totalDugCells} 格`;
+    } else if (totalRaisedCells > 0) {
+      this.statusMessage = `山地兵造地 ${totalRaisedCells} 格`;
     } else if (totalDestroyedCells > 0) {
       this.statusMessage = `特殊兵种触发，清空 ${totalDestroyedCells} 格`;
     } else if (totalDisabled > 0) {
       this.statusMessage = `有 ${totalDisabled} 枚特殊兵种失去能力`;
     }
+
+    return { totalExploded, totalDisabled, totalDestroyedCells, totalDugCells, totalRaisedCells };
   }
 
   simulatePlacePiece(sourceBoard, row, col, piece, player) {
@@ -5778,6 +5999,24 @@ export default class GoGameScene {
 
   isPlayablePoint(row, col) {
     return this.isBoardShapeCell(row, col) && this.board[row][col] !== DESTROYED;
+  }
+
+  restorePlayableCell(row, col) {
+    if (!this.isInside(row, col)) return false;
+
+    if (BOARD_SHAPE[row][col] !== 1) {
+      BOARD_SHAPE[row][col] = 1;
+      this.boardConfig.shape = BOARD_SHAPE;
+      this.board[row][col] = EMPTY;
+      return true;
+    }
+
+    if (this.board[row][col] === DESTROYED) {
+      this.board[row][col] = EMPTY;
+      return true;
+    }
+
+    return false;
   }
 
   isPiece(cell) {
@@ -7158,6 +7397,16 @@ export default class GoGameScene {
       if (pieceDef.needsDirection) {
         this.drawDirectionMarker(x, y, r, cell.dir, cell.color);
       }
+    }
+
+    if (!isPreview && cell.cloneSpawned) {
+      ctx.save();
+      ctx.fillStyle = cell.color === BLACK ? '#ffd54f' : '#c62828';
+      ctx.font = `bold ${Math.max(11, this.cellSize * 0.24)}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('x2', x, y + r * 0.95);
+      ctx.restore();
     }
 
     if (!isPreview && cell.nightmareActive) {
