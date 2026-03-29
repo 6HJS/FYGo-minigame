@@ -8,6 +8,23 @@ const windowInfo = wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync(
 const SCREEN_WIDTH = windowInfo.windowWidth || canvas.width;
 const SCREEN_HEIGHT = windowInfo.windowHeight || canvas.height;
 
+function detectDesktopLikePlatform() {
+  try {
+    const info = wx.getSystemInfoSync ? wx.getSystemInfoSync() : null;
+    const platform = String(info && info.platform ? info.platform : '').toLowerCase();
+    const model = String(info && info.model ? info.model : '').toLowerCase();
+    return (
+      platform === 'windows' ||
+      platform === 'mac' ||
+      platform === 'devtools' ||
+      model.includes('windows') ||
+      model.includes('mac')
+    );
+  } catch (err) {
+    return false;
+  }
+}
+
 const EMPTY = null;
 const INVALID = -1;
 const DESTROYED = -2;
@@ -29,6 +46,7 @@ let BOARD_COLS = BOARD_SHAPE[0].length;
 export default class GoGameScene {
   constructor(sceneManager) {
     this.sceneManager = sceneManager;
+    this.isDesktopLike = detectDesktopLikePlatform();
     this.EMPTY = EMPTY;
     this.INVALID = INVALID;
     this.DESTROYED = DESTROYED;
@@ -55,6 +73,11 @@ export default class GoGameScene {
     this.niuCrossOpeningEnabled = false;
     this.captureCounts = { black: 0, white: 0 };
     this.komi = 6.5;
+    this.undoRequestState = null;
+    this.undoHistory = [];
+    this.replayMode = false;
+    this.replayHistory = [];
+    this.replayCurrentIndex = 0;
     this.scoreRequestState = null;
     this.scoreSummary = null;
     this.scoreTerritoryMap = null;
@@ -64,7 +87,14 @@ export default class GoGameScene {
     this.gameOver = false;
     this.victoryDialog = null;
     this.scoreRequestState = null;
+    this.undoRequestState = null;
+    this.undoHistory = [];
     this.scoreSummary = null;
+    this.undoRequestDialog = null;
+    this.replayMode = false;
+    this.replayHistory = [];
+    this.replayCurrentIndex = 0;
+    this.replayControls = null;
 
     this.initSafeLayout();
     this.resetGame();
@@ -82,10 +112,11 @@ export default class GoGameScene {
     this.row1Y = capsuleBottom + 12;
 
     this.backBtn = { x: 24, y: this.row1Y, w: 100, h: 40 };
-    this.scoreRequestBtn = { x: (SCREEN_WIDTH - 100) / 2, y: this.row1Y, w: 100, h: 40 };
+    this.scoreRequestBtn = { x: (SCREEN_WIDTH - 110) / 2, y: this.row1Y, w: 110, h: 40 };
     this.restartBtn = { x: SCREEN_WIDTH - 24 - 100, y: this.row1Y, w: 100, h: 40 };
+    this.undoRequestBtn = { x: (SCREEN_WIDTH - 110) / 2, y: this.row1Y + 48, w: 110, h: 40 };
 
-    this.previewRowY = this.row1Y + 90;
+    this.previewRowY = this.row1Y + 138;
     this.previewRowH = 56;
     this.previewInfoGap = 12;
     this.previewInfoLineH = 22;
@@ -103,6 +134,21 @@ export default class GoGameScene {
     this.cardSlotsLayout = this.buildCardSlotLayout();
     this.victoryDialog = this.buildVictoryDialogLayout();
     this.scoreRequestDialog = this.buildScoreRequestDialogLayout();
+    this.undoRequestDialog = this.buildUndoRequestDialogLayout();
+    this.replayControls = this.buildReplayControlsLayout();
+    this.zoomControls = this.buildZoomControlsLayout();
+  }
+
+  buildZoomControlsLayout() {
+    const size = 42;
+    const gap = 10;
+    const x = SCREEN_WIDTH - 24 - size;
+    const baseY = this.boardPaddingTop + 12;
+    return {
+      zoomInBtn: { x, y: baseY, w: size, h: size },
+      zoomOutBtn: { x, y: baseY + size + gap, w: size, h: size },
+      zoomResetBtn: { x, y: baseY + (size + gap) * 2, w: size, h: size }
+    };
   }
 
 
@@ -133,9 +179,56 @@ export default class GoGameScene {
     };
   }
 
+  buildUndoRequestDialogLayout() {
+    const w = Math.min(SCREEN_WIDTH - 56, 360);
+    const h = 236;
+    const x = (SCREEN_WIDTH - w) / 2;
+    const y = (SCREEN_HEIGHT - h) / 2 - 12;
+    const btnGap = 16;
+    const btnW = (w - 64 - btnGap) / 2;
+    return {
+      x,
+      y,
+      w,
+      h,
+      refuseBtn: {
+        x: x + 32,
+        y: y + h - 74,
+        w: btnW,
+        h: 46
+      },
+      acceptBtn: {
+        x: x + 32 + btnW + btnGap,
+        y: y + h - 74,
+        w: btnW,
+        h: 46
+      }
+    };
+  }
+
+
+  buildReplayControlsLayout() {
+    const gap = 10;
+    const btnW = 74;
+    const btnH = 42;
+    const rowW = btnW * 4 + gap * 3;
+    const startX = (SCREEN_WIDTH - rowW) / 2;
+    const row1Y = SCREEN_HEIGHT - 122;
+    const row2Y = SCREEN_HEIGHT - 68;
+    return {
+      firstBtn: { x: startX, y: row1Y, w: btnW, h: btnH },
+      prevBtn: { x: startX + (btnW + gap), y: row1Y, w: btnW, h: btnH },
+      nextBtn: { x: startX + (btnW + gap) * 2, y: row1Y, w: btnW, h: btnH },
+      lastBtn: { x: startX + (btnW + gap) * 3, y: row1Y, w: btnW, h: btnH },
+      practiceBtn: { x: Math.max(24, (SCREEN_WIDTH - 220) / 2), y: row2Y, w: Math.min(220, SCREEN_WIDTH - 48), h: 44 }
+    };
+  }
+
   buildVictoryDialogLayout() {
     const w = Math.min(SCREEN_WIDTH - 56, 360);
-    const hasScoreReview = !!(this.victoryDialog && this.victoryDialog.reviewText);
+    const hasScoreReview = !!(this.victoryDialog && this.victoryDialog.scoreReviewText);
+    const hasReplayReview = !!(this.victoryDialog && this.victoryDialog.replayText);
+    const buttonCount = 1 + (hasScoreReview ? 1 : 0) + (hasReplayReview ? 1 : 0);
     const messageLines = this.wrapDialogText(this.victoryDialog && this.victoryDialog.message ? this.victoryDialog.message : '', 9);
     const detailLines = this.wrapDialogText(this.victoryDialog && this.victoryDialog.detail ? this.victoryDialog.detail : '', 16);
     const topPadding = 32;
@@ -143,13 +236,23 @@ export default class GoGameScene {
     const messageH = Math.max(1, messageLines.length) * 40;
     const detailGap = detailLines.length > 0 ? 12 : 0;
     const detailH = detailLines.length * 24;
-    const btnGap = hasScoreReview ? 12 : 0;
-    const buttonsH = hasScoreReview ? 104 : 46;
+    const btnGap = 12;
+    const buttonsH = buttonCount * 46 + (buttonCount - 1) * btnGap;
     const bottomPadding = 26;
-    const h = Math.max(hasScoreReview ? 278 : 236, topPadding + titleH + 26 + messageH + detailGap + detailH + 24 + buttonsH + bottomPadding);
+    const minH = buttonCount >= 3 ? 340 : (buttonCount === 2 ? 278 : 236);
+    const h = Math.max(minH, topPadding + titleH + 26 + messageH + detailGap + detailH + 24 + buttonsH + bottomPadding);
     const x = (SCREEN_WIDTH - w) / 2;
     const y = (SCREEN_HEIGHT - h) / 2 - 12;
-    const confirmBtnY = y + h - bottomPadding - buttonsH;
+    const firstBtnY = y + h - bottomPadding - buttonsH;
+    let cursorY = firstBtnY;
+    const makeBtn = () => {
+      const btn = { x: x + 32, y: cursorY, w: w - 64, h: 46 };
+      cursorY += 46 + btnGap;
+      return btn;
+    };
+    const confirmBtn = makeBtn();
+    const scoreReviewBtn = hasScoreReview ? makeBtn() : null;
+    const replayBtn = hasReplayReview ? makeBtn() : null;
     return {
       x,
       y,
@@ -157,18 +260,9 @@ export default class GoGameScene {
       h,
       messageLines,
       detailLines,
-      confirmBtn: {
-        x: x + 32,
-        y: confirmBtnY,
-        w: w - 64,
-        h: 46
-      },
-      reviewBtn: hasScoreReview ? {
-        x: x + 32,
-        y: confirmBtnY + 46 + btnGap,
-        w: w - 64,
-        h: 46
-      } : null
+      confirmBtn,
+      scoreReviewBtn,
+      replayBtn
     };
   }
 
@@ -711,6 +805,171 @@ export default class GoGameScene {
     return color === BLACK ? '黑棋' : '白棋';
   }
 
+  deepCloneStateData(data) {
+    if (data == null) return data;
+    return JSON.parse(JSON.stringify(data));
+  }
+
+  captureUndoSnapshot() {
+    return {
+      board: this.cloneBoard(this.board),
+      currentPlayer: this.currentPlayer,
+      previousBoardKey: this.previousBoardKey,
+      lastMove: this.lastMove ? { ...this.lastMove } : null,
+      lastCaptured: this.deepCloneStateData(this.lastCaptured || []),
+      captureCounts: { ...this.captureCounts },
+      cardLoadoutByColor: this.deepCloneStateData(this.cardLoadoutByColor),
+      nextPieceTypeByColor: this.deepCloneStateData(this.nextPieceTypeByColor),
+      nextPieceType: this.nextPieceType,
+      contractLinks: this.deepCloneStateData(this.contractLinks || []),
+      trapState: this.deepCloneStateData(this.trapState || []),
+      fogState: this.deepCloneStateData(this.fogState),
+      lastPlagueResolution: this.deepCloneStateData(this.lastPlagueResolution),
+      timeLimitEffect: this.deepCloneStateData(this.timeLimitEffect),
+      turnPressure: this.deepCloneStateData(this.turnPressure),
+      nextPieceId: this.nextPieceId,
+      turnTimers: this.deepCloneStateData(this.turnTimers),
+      winner: this.winner,
+      gameOver: this.gameOver,
+      victoryDialog: this.deepCloneStateData(this.victoryDialog),
+      scoreSummary: this.deepCloneStateData(this.scoreSummary),
+      scoreTerritoryMap: this.deepCloneStateData(this.scoreTerritoryMap),
+      scoreReviewBoard: this.scoreReviewBoard ? this.cloneBoard(this.scoreReviewBoard) : null,
+      scoreReviewMode: !!this.scoreReviewMode
+    };
+  }
+
+  markUndoSnapshot() {
+    if (this.isTutorialMode || this.gameOver) return;
+    if (!Array.isArray(this.undoHistory)) this.undoHistory = [];
+    this.undoHistory.push(this.captureUndoSnapshot());
+  }
+
+  restoreUndoSnapshot(snapshot, options = {}) {
+    if (!snapshot) return false;
+    const preserveReplayState = !!options.preserveReplayState;
+
+    this.board = this.cloneBoard(snapshot.board);
+    this.previousBoardKey = snapshot.previousBoardKey;
+    this.lastMove = snapshot.lastMove ? { ...snapshot.lastMove } : null;
+    this.lastCaptured = this.deepCloneStateData(snapshot.lastCaptured || []);
+    this.captureCounts = { ...(snapshot.captureCounts || { black: 0, white: 0 }) };
+    this.cardLoadoutByColor = this.deepCloneStateData(snapshot.cardLoadoutByColor) || {
+      black: this.createInitialCardLoadout('black'),
+      white: this.createInitialCardLoadout('white')
+    };
+    this.nextPieceTypeByColor = this.deepCloneStateData(snapshot.nextPieceTypeByColor) || {
+      black: this.pieceConfig.defaultPieceType || 'normal',
+      white: this.pieceConfig.defaultPieceType || 'normal'
+    };
+    this.currentPlayer = snapshot.currentPlayer || BLACK;
+    this.nextPieceType = snapshot.nextPieceType || (this.pieceConfig.defaultPieceType || 'normal');
+    this.contractLinks = this.deepCloneStateData(snapshot.contractLinks || []);
+    this.trapState = this.deepCloneStateData(snapshot.trapState || []);
+    this.fogState = this.deepCloneStateData(snapshot.fogState);
+    this.lastPlagueResolution = this.deepCloneStateData(snapshot.lastPlagueResolution);
+    this.timeLimitEffect = this.deepCloneStateData(snapshot.timeLimitEffect);
+    this.turnPressure = this.deepCloneStateData(snapshot.turnPressure) || {
+      active: false,
+      targetPlayer: null,
+      startedAt: 0,
+      durationMs: 0,
+      remainingMs: 0,
+      displaySeconds: 0,
+      pulsePhase: 0
+    };
+    this.nextPieceId = snapshot.nextPieceId || 1;
+    this.turnTimers = this.deepCloneStateData(snapshot.turnTimers) || { black: 300000, white: 300000 };
+    this.winner = snapshot.winner || null;
+    this.gameOver = !!snapshot.gameOver;
+    this.victoryDialog = this.deepCloneStateData(snapshot.victoryDialog) || null;
+    this.scoreSummary = this.deepCloneStateData(snapshot.scoreSummary) || null;
+    this.scoreTerritoryMap = this.deepCloneStateData(snapshot.scoreTerritoryMap) || null;
+    this.scoreReviewBoard = snapshot.scoreReviewBoard ? this.cloneBoard(snapshot.scoreReviewBoard) : null;
+    this.scoreReviewMode = !!snapshot.scoreReviewMode;
+
+    this.undoRequestState = null;
+    this.scoreRequestState = null;
+    if (!preserveReplayState) {
+      this.replayMode = false;
+      this.replayHistory = [];
+      this.replayCurrentIndex = 0;
+    }
+    this.clearPendingSelection();
+    this.clearPendingConfirmPlacement();
+    this.clearPendingContractPlacement();
+    this.clearPendingSacrificePlacement();
+    this.clearPendingRebirthPlacement();
+    this.clearPendingPersuaderPlacement();
+    this.clearPendingThiefPlacement();
+    this.clearPendingTeleportPlacement();
+    this.clearPendingRelocatePlacement();
+    this.clearPendingSwapCardSelection();
+    this.clearPendingNightmarePlacement();
+    this.pendingFogPlacement = null;
+    this.syncActivePlayerCardState();
+    this.lastTimerUpdateAt = Date.now();
+    return true;
+  }
+
+  requestUndoTurn() {
+    if (this.gameOver) return;
+    if (this.isTutorialMode) {
+      this.statusMessage = '教学关卡暂不支持申请悔棋';
+      return;
+    }
+    if (this.scoreRequestState || this.undoRequestState) {
+      this.statusMessage = '已有申请等待回应';
+      return;
+    }
+    if (!Array.isArray(this.undoHistory) || this.undoHistory.length <= 0) {
+      this.statusMessage = '当前还没有可悔的上一步';
+      return;
+    }
+
+    const requester = this.currentPlayer;
+    const responder = this.getOpponent(requester);
+    this.undoRequestState = {
+      requester,
+      responder,
+      dialogVisible: true
+    };
+    this.setCurrentPlayer(responder);
+    this.statusMessage = `${this.getColorName(requester)}申请悔棋，等待${this.getColorName(responder)}决定`;
+    this.clearPendingSelection();
+    this.clearPendingConfirmPlacement();
+    this.clearPendingContractPlacement();
+    this.clearPendingSacrificePlacement();
+    this.clearPendingRebirthPlacement();
+    this.clearPendingPersuaderPlacement();
+    this.clearPendingThiefPlacement();
+    this.clearPendingTeleportPlacement();
+    this.clearPendingRelocatePlacement();
+    this.clearPendingSwapCardSelection();
+    this.clearPendingNightmarePlacement();
+    this.pendingFogPlacement = null;
+  }
+
+  refuseUndoRequest() {
+    if (!this.undoRequestState) return;
+    const requester = this.undoRequestState.requester;
+    const responder = this.undoRequestState.responder;
+    this.undoRequestState = null;
+    this.statusMessage = `${this.getColorName(responder)}拒绝悔棋，${this.getColorName(requester)}本回合已跳过`;
+  }
+
+  acceptUndoRequest() {
+    if (!this.undoRequestState) return;
+    const requester = this.undoRequestState.requester;
+    const snapshot = Array.isArray(this.undoHistory) ? this.undoHistory.pop() : null;
+    this.undoRequestState = null;
+    if (!snapshot || !this.restoreUndoSnapshot(snapshot)) {
+      this.statusMessage = '悔棋失败：找不到可恢复的上一步';
+      return;
+    }
+    this.statusMessage = `${this.getColorName(requester)}悔棋成功，已回到上一步`; 
+  }
+
   requestScoreCount() {
     if (this.gameOver) return;
     if (this.isTutorialMode) {
@@ -741,6 +1000,9 @@ export default class GoGameScene {
     this.clearPendingTeleportPlacement();
     this.clearPendingRelocatePlacement();
     this.clearPendingSwapCardSelection();
+    this.replayMode = false;
+    this.replayHistory = [];
+    this.replayCurrentIndex = 0;
     this.pendingFogPlacement = null;
   }
 
@@ -1188,22 +1450,102 @@ export default class GoGameScene {
       message: `${winnerText}赢了`,
       detail,
       confirmText: '确认返回主界面',
-      reviewText: this.scoreSummary ? '查看点目结果' : ''
+      scoreReviewText: this.scoreSummary ? '查看点目结果' : '',
+      replayText: '进入复盘'
     };
   }
 
   closeVictoryDialogAndReturnHome() {
     this.victoryDialog = null;
+    this.replayMode = false;
+    this.replayHistory = [];
+    this.replayCurrentIndex = 0;
     const targetScene = this.homeScene || this.returnScene;
     if (targetScene) {
       this.sceneManager.switchTo(targetScene);
     }
   }
 
+  buildReplayStatusText(index = this.replayCurrentIndex, total = null) {
+    const maxIndex = typeof total === 'number' ? total : Math.max(0, (Array.isArray(this.replayHistory) ? this.replayHistory.length - 1 : 0));
+    if (maxIndex <= 0) return '复盘：当前为开局';
+    if (index <= 0) return `复盘：开局（共 ${maxIndex} 步）`;
+    if (index >= maxIndex) return `复盘：终局步（第 ${maxIndex}/${maxIndex} 步）`;
+    return `复盘：第 ${index}/${maxIndex} 步`;
+  }
+
+  applyReplaySnapshot(index) {
+    if (!Array.isArray(this.replayHistory) || this.replayHistory.length <= 0) return false;
+    const maxIndex = this.replayHistory.length - 1;
+    const safeIndex = Math.max(0, Math.min(index, maxIndex));
+    const snapshot = this.deepCloneStateData(this.replayHistory[safeIndex]);
+    if (!snapshot) return false;
+    this.restoreUndoSnapshot(snapshot, { preserveReplayState: true });
+    this.replayMode = true;
+    this.replayCurrentIndex = safeIndex;
+    this.victoryDialog = null;
+    this.scoreReviewMode = false;
+    this.statusMessage = this.buildReplayStatusText(safeIndex, maxIndex);
+    return true;
+  }
+
+  enterReplayMode() {
+    if (!this.gameOver) return false;
+    const history = Array.isArray(this.undoHistory) ? this.undoHistory.map((item) => this.deepCloneStateData(item)) : [];
+    history.push(this.captureUndoSnapshot());
+    this.replayHistory = history;
+    this.replayCurrentIndex = history.length - 1;
+    this.scoreReviewMode = false;
+    if (this.scoreRequestState) this.scoreRequestState.dialogVisible = false;
+    if (this.undoRequestState) this.undoRequestState.dialogVisible = false;
+    this.pendingTap = null;
+    return this.applyReplaySnapshot(this.replayCurrentIndex);
+  }
+
+  jumpReplayToStart() {
+    if (!this.replayMode) return false;
+    return this.applyReplaySnapshot(0);
+  }
+
+  stepReplay(delta) {
+    if (!this.replayMode) return false;
+    return this.applyReplaySnapshot((this.replayCurrentIndex || 0) + delta);
+  }
+
+  jumpReplayToEnd() {
+    if (!this.replayMode) return false;
+    return this.applyReplaySnapshot(Math.max(0, this.replayHistory.length - 1));
+  }
+
+  startPracticeFromReplay() {
+    if (!this.replayMode || !Array.isArray(this.replayHistory) || this.replayHistory.length <= 0) return false;
+    const index = Math.max(0, Math.min(this.replayCurrentIndex || 0, this.replayHistory.length - 1));
+    const snapshot = this.deepCloneStateData(this.replayHistory[index]);
+    if (!snapshot) return false;
+    this.restoreUndoSnapshot(snapshot);
+    this.undoHistory = this.replayHistory.slice(0, index).map((item) => this.deepCloneStateData(item));
+    this.replayMode = false;
+    this.replayHistory = [];
+    this.replayCurrentIndex = 0;
+    this.gameOver = false;
+    this.winner = null;
+    this.victoryDialog = null;
+    this.scoreSummary = null;
+    this.scoreTerritoryMap = null;
+    this.scoreReviewBoard = null;
+    this.scoreReviewMode = false;
+    this.statusMessage = index <= 0
+      ? '已从开局进入残局对战'
+      : `已从复盘第 ${index} 步进入残局对战`;
+    return true;
+  }
+
   enterScoreReviewMode() {
     if (!this.scoreSummary || !this.scoreTerritoryMap) return;
     this.scoreReviewMode = true;
     this.victoryDialog = null;
+    if (this.scoreRequestState) this.scoreRequestState.dialogVisible = false;
+    if (this.undoRequestState) this.undoRequestState.dialogVisible = false;
     this.clearPendingSelection();
     this.clearPendingConfirmPlacement();
     this.clearPendingContractPlacement();
@@ -1279,10 +1621,17 @@ export default class GoGameScene {
     this.gameOver = false;
     this.victoryDialog = null;
     this.scoreRequestState = null;
+    this.undoRequestState = null;
+    this.undoHistory = [];
     this.scoreSummary = null;
     this.scoreTerritoryMap = null;
     this.scoreReviewBoard = null;
     this.scoreReviewMode = false;
+    this.replayMode = false;
+    this.replayHistory = [];
+    this.replayCurrentIndex = 0;
+    this.pendingTap = null;
+    this.lastHandledTap = null;
 
     this.initTurnTimers();
 
@@ -1313,6 +1662,8 @@ export default class GoGameScene {
     this.nightmareDirectionButtons = null;
     this.pendingRelocatePlacement = null;
     this.pendingSwapCardSelection = null;
+    this.pendingTrapPlacement = null;
+    this.trapState = [];
     this.fogState = null;
     this.lastPlagueResolution = null;
     this.timeLimitEffect = null;
@@ -1529,6 +1880,14 @@ export default class GoGameScene {
     };
   }
 
+  getBoardViewportCenter() {
+    const viewport = this.getBoardViewportRect();
+    return {
+      x: (viewport.left + viewport.right) / 2,
+      y: (viewport.top + viewport.bottom) / 2
+    };
+  }
+
   clampBoardOffset(offsetX, offsetY, scale = this.boardScale) {
     const viewport = this.getBoardViewportRect();
     const margin = 36;
@@ -1647,27 +2006,16 @@ export default class GoGameScene {
     this.lastGestureEndAt = Date.now();
   }
 
-  onWheel(e) {
-    if (!e) return;
-
-    const x = typeof e.clientX === 'number' ? e.clientX : SCREEN_WIDTH / 2;
-    const y = typeof e.clientY === 'number' ? e.clientY : this.boardCenterY;
-
-    if (!this.isPointInBoardViewport(x, y)) return;
-
-    const rawDelta = typeof e.deltaY === 'number'
-      ? e.deltaY
-      : (typeof e.wheelDelta === 'number' ? -e.wheelDelta : 0);
-    if (!rawDelta) return;
+  adjustBoardZoomByFactor(scaleFactor, anchorX, anchorY) {
+    if (!scaleFactor || !isFinite(scaleFactor) || scaleFactor <= 0) return false;
 
     const { minScale, maxScale } = this.getBoardScaleLimits();
-    const baseFactor = rawDelta > 0 ? 0.9 : 1.1;
-    const intensity = Math.min(4, Math.max(1, Math.abs(rawDelta) / 120));
-    const scaleFactor = Math.pow(baseFactor, intensity);
     const oldScale = this.boardScale;
     const newScale = this.clamp(oldScale * scaleFactor, minScale, maxScale);
+    if (Math.abs(newScale - oldScale) < 0.0001) return false;
 
-    if (Math.abs(newScale - oldScale) < 0.0001) return;
+    const x = typeof anchorX === 'number' ? anchorX : this.getBoardViewportCenter().x;
+    const y = typeof anchorY === 'number' ? anchorY : this.getBoardViewportCenter().y;
 
     const anchorBoardX = (x - this.baseOriginX - this.boardOffsetX) / (this.baseCellSize * oldScale);
     const anchorBoardY = (y - this.baseOriginY - this.boardOffsetY) / (this.baseCellSize * oldScale);
@@ -1676,8 +2024,42 @@ export default class GoGameScene {
     this.boardOffsetX = x - this.baseOriginX - anchorBoardX * this.baseCellSize * newScale;
     this.boardOffsetY = y - this.baseOriginY - anchorBoardY * this.baseCellSize * newScale;
     this.applyBoardViewTransform();
+    return true;
+  }
 
-    if (e.preventDefault) e.preventDefault();
+  zoomBoardByStep(direction, anchorX, anchorY) {
+    if (!direction) return false;
+    const factor = direction > 0 ? 1.18 : 1 / 1.18;
+    return this.adjustBoardZoomByFactor(factor, anchorX, anchorY);
+  }
+
+  resetBoardZoom() {
+    this.boardScale = 1;
+    this.boardOffsetX = 0;
+    this.boardOffsetY = 0;
+    this.applyBoardViewTransform();
+    return true;
+  }
+
+  onWheel(e) {
+    if (!e) return;
+
+    const x = typeof e.clientX === 'number' ? e.clientX : SCREEN_WIDTH / 2;
+    const y = typeof e.clientY === 'number' ? e.clientY : this.getBoardViewportCenter().y;
+
+    if (!this.isPointInBoardViewport(x, y)) return;
+
+    const rawDelta = typeof e.deltaY === 'number'
+      ? e.deltaY
+      : (typeof e.wheelDelta === 'number' ? -e.wheelDelta : 0);
+    if (!rawDelta) return;
+
+    const baseFactor = rawDelta > 0 ? 0.9 : 1.1;
+    const intensity = Math.min(4, Math.max(1, Math.abs(rawDelta) / 120));
+    const scaleFactor = Math.pow(baseFactor, intensity);
+    const changed = this.adjustBoardZoomByFactor(scaleFactor, x, y);
+
+    if (changed && e.preventDefault) e.preventDefault();
   }
 
   getAllValidPoints() {
@@ -1994,6 +2376,112 @@ export default class GoGameScene {
     this.pendingRebirthPlacement = null;
   }
 
+
+  clearPendingTrapPlacement() {
+    this.pendingTrapPlacement = null;
+  }
+
+  cancelPendingTrapPlacement() {
+    if (!this.pendingTrapPlacement) return false;
+    const pending = this.pendingTrapPlacement;
+    if (pending && pending.pieceId) {
+      const found = this.findPiecePositionById(pending.pieceId);
+      if (found && this.isPiece(found.cell)) {
+        this.removePieceById(pending.pieceId, { allowRebirth: false });
+      }
+    }
+    this.refundCard('trap');
+    this.clearPendingTrapPlacement();
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.previousBoardKey = this.getBoardKey(this.board);
+    this.lastMove = null;
+    this.lastCaptured = [];
+    this.statusMessage = '已取消陷阱落子';
+    return true;
+  }
+
+  findTrapIndexAt(row, col) {
+    const list = Array.isArray(this.trapState) ? this.trapState : [];
+    for (let i = 0; i < list.length; i++) {
+      const trap = list[i];
+      if (trap && trap.row === row && trap.col === col) return i;
+    }
+    return -1;
+  }
+
+  getTrapAt(row, col) {
+    const index = this.findTrapIndexAt(row, col);
+    return index >= 0 ? this.trapState[index] : null;
+  }
+
+  isTrapVisibleToCurrentPlayer(trap) {
+    return !!(trap && trap.ownerColor === this.currentPlayer);
+  }
+
+  placeHiddenTrap(row, col, ownerColor) {
+    if (!this.isPlayablePoint(row, col)) return { ok: false, message: '请选择一个有效位置布设陷阱' };
+    if (this.board[row][col] !== EMPTY) return { ok: false, message: '陷阱只能布设在空位' };
+    const index = this.findTrapIndexAt(row, col);
+    const entry = { row, col, ownerColor };
+    if (index >= 0) this.trapState[index] = entry;
+    else this.trapState.push(entry);
+    return { ok: true };
+  }
+
+  finalizeManualTurn(message, tutorialPayload = null) {
+    this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+    this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
+    const turnStartInfo = this.resolveTurnStartSpecials(this.currentPlayer);
+    if (this.isFogActiveForPlayer(this.getOpponent(this.currentPlayer))) {
+      this.clearFog();
+    }
+    this.previousBoardKey = this.getBoardKey(this.board);
+    if (message) {
+      this.statusMessage = message;
+    } else if (turnStartInfo.plagueInfo && (turnStartInfo.plagueInfo.deathCount > 0 || turnStartInfo.plagueInfo.recoverCount > 0)) {
+      this.statusMessage = `瘟疫结算：病死 ${turnStartInfo.plagueInfo.deathCount} 枚，康复 ${turnStartInfo.plagueInfo.recoverCount} 枚`;
+    } else if (turnStartInfo.archerDisabledCount > 0) {
+      this.statusMessage = `有 ${turnStartInfo.archerDisabledCount} 枚弓箭手被敌子贴身，失去射箭能力`;
+    } else if (turnStartInfo.archerShotCount > 0) {
+      this.statusMessage = turnStartInfo.archerKillCount > 0
+        ? `弓箭手放箭，击杀 ${turnStartInfo.archerKillCount} 枚`
+        : '弓箭手放箭，但前方没有目标';
+    } else if (turnStartInfo.persuadedCount > 0 || turnStartInfo.vanishedCount > 0) {
+      this.statusMessage = `说客发动，转化 ${turnStartInfo.persuadedCount} 枚${turnStartInfo.vanishedCount > 0 ? `，消失 ${turnStartInfo.vanishedCount} 枚` : ''}`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.failedCount > 0) {
+      this.statusMessage = `瞬移受阻，失效 ${turnStartInfo.teleportInfo.failedCount} 枚`;
+    } else if (turnStartInfo.teleportInfo && turnStartInfo.teleportInfo.movedCount > 0) {
+      this.statusMessage = `瞬移发动，移动 ${turnStartInfo.teleportInfo.movedCount} 枚`;
+    }
+    if (tutorialPayload) this.handleTutorialPostAction(tutorialPayload.trigger || 'commit', tutorialPayload.piece || null);
+    return turnStartInfo;
+  }
+
+  resolveTrapLandingAt(row, col, options = {}) {
+    const trapIndex = this.findTrapIndexAt(row, col);
+    if (trapIndex < 0) return { triggered: false };
+    const victim = this.board[row][col];
+    if (!this.isPiece(victim)) return { triggered: false };
+    const trap = this.trapState[trapIndex];
+    this.trapState.splice(trapIndex, 1);
+    const removal = this.resolvePieceRemovalAt(row, col, {
+      reason: 'capture',
+      allowRebirth: true,
+      scoreByVictimOpposition: true
+    });
+    this.lastCaptured = (this.lastCaptured || []).concat([[row, col]]);
+    this.previousBoardKey = this.getBoardKey(this.board);
+    return {
+      triggered: true,
+      trap,
+      victimColor: victim.color,
+      victimType: victim.type,
+      counted: !!removal.counted,
+      reborn: !!removal.reborn,
+      message: options.message || `陷阱触发：${this.getColorName(victim.color)}落子即死`
+    };
+  }
+
   clearPendingPersuaderPlacement() {
     this.pendingPersuaderPlacement = null;
   }
@@ -2132,6 +2620,12 @@ export default class GoGameScene {
     this.lastMove = { row, col };
     this.lastCaptured = [];
     this.previousBoardKey = this.getBoardKey(this.board);
+    const nightmareTrapHit = this.resolveTrapLandingAt(row, col, { message: '梦魇子误踏陷阱：本回合结束' });
+    if (nightmareTrapHit.triggered) {
+      this.clearPendingNightmarePlacement();
+      this.finalizeManualTurn(nightmareTrapHit.message, { trigger: 'commit', piece: { type: 'nightmare', color: this.currentPlayer } });
+      return true;
+    }
     this.nextPieceType = 'nightmare';
     this.statusMessage = '梦魇已落子：请选择任意一枚敌方棋子';
     return true;
@@ -2156,6 +2650,7 @@ export default class GoGameScene {
   }
 
   bindPendingNightmareDirection(dir) {
+    this.markUndoSnapshot();
     const pending = this.pendingNightmarePlacement;
     if (!pending) return false;
 
@@ -2379,6 +2874,7 @@ export default class GoGameScene {
   }
 
   commitRelocateAreas(firstArea, secondArea) {
+    this.markUndoSnapshot();
     const firstCells = this.buildRelocateAreaCells(firstArea);
     const secondCells = this.buildRelocateAreaCells(secondArea);
     if (firstCells.length !== 4 || secondCells.length !== 4) {
@@ -2445,11 +2941,32 @@ export default class GoGameScene {
     return true;
   }
 
+  isInstantResolvedPieceType(type) {
+    return type === 'gravity' || type === 'repulsion' || type === 'reverse' || type === 'auspice' || type === 'symphony';
+  }
+
+  normalizeResolvedInstantPieces() {
+    let changed = false;
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = this.board[row][col];
+        if (!this.isPiece(cell) || !this.isInstantResolvedPieceType(cell.type)) continue;
+        this.normalizePieceAt(row, col);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   resolveRelocateBoardState() {
     let loopGuard = 0;
     while (loopGuard < 24) {
       loopGuard += 1;
       let changed = false;
+
+      if (this.normalizeResolvedInstantPieces()) {
+        changed = true;
+      }
 
       for (let row = 0; row < BOARD_ROWS; row++) {
         for (let col = 0; col < BOARD_COLS; col++) {
@@ -2582,6 +3099,12 @@ export default class GoGameScene {
     this.lastMove = { row, col };
     this.lastCaptured = [];
     this.previousBoardKey = this.getBoardKey(this.board);
+    const sacrificeTrapHit = this.resolveTrapLandingAt(row, col, { message: '献祭子误踏陷阱：本回合结束' });
+    if (sacrificeTrapHit.triggered) {
+      this.clearPendingSacrificePlacement();
+      this.finalizeManualTurn(sacrificeTrapHit.message, { trigger: 'commit', piece: { type: 'sacrifice', color: this.currentPlayer } });
+      return;
+    }
     this.statusMessage = '献祭已发动：己方中心与四邻同归于尽，请指定任意一枚敌子提掉';
   }
 
@@ -2946,6 +3469,7 @@ export default class GoGameScene {
   }
 
   commitPlacement(row, col, piece, result, options = {}) {
+    this.markUndoSnapshot();
     const endTurn = options.endTurn !== false;
     const advanceContracts = options.advanceContracts !== false;
 
@@ -2962,6 +3486,19 @@ export default class GoGameScene {
     }
 
     this.armPlacedPiece(row, col, piece);
+
+    const trapHit = this.resolveTrapLandingAt(row, col);
+    if (trapHit.triggered) {
+      const trapWonByCapture = this.checkVictoryAfterCapture(BLACK) || this.checkVictoryAfterCapture(WHITE);
+      if (endTurn && !trapWonByCapture) {
+        if (this.isTurnPressureActiveForPlayer(this.currentPlayer)) {
+          this.clearTurnPressure(true);
+        }
+        this.setCurrentPlayer(this.getOpponent(this.currentPlayer));
+      }
+      this.statusMessage = trapHit.message;
+      return true;
+    }
 
     const gravityInfo = piece.type === 'gravity'
       ? this.applyGravityEffect(row, col)
@@ -3155,6 +3692,11 @@ export default class GoGameScene {
 
     if (type === 'teleport') {
       this.startTeleportPlacement(row, col);
+      return true;
+    }
+
+    if (type === 'trap') {
+      this.startTrapPlacement(row, col);
       return true;
     }
 
@@ -3528,6 +4070,26 @@ export default class GoGameScene {
     return x >= viewport.left && x <= viewport.right && y >= viewport.top && y <= viewport.bottom;
   }
 
+  isPointInStaticUi(x, y) {
+    const rects = [this.backBtn, this.scoreRequestBtn, this.undoRequestBtn, this.restartBtn];
+    if (this.zoomControls) {
+      rects.push(this.zoomControls.zoomInBtn, this.zoomControls.zoomOutBtn, this.zoomControls.zoomResetBtn);
+    }
+    if (this.replayMode && this.replayControls) {
+      rects.push(
+        this.replayControls.firstBtn,
+        this.replayControls.prevBtn,
+        this.replayControls.nextBtn,
+        this.replayControls.lastBtn,
+        this.replayControls.practiceBtn
+      );
+    }
+    for (const rect of rects) {
+      if (rect && inRect(x, y, rect.x, rect.y, rect.w, rect.h)) return true;
+    }
+    return false;
+  }
+
   beginTapTracking(touch) {
     if (!touch) return;
     this.pendingTap = {
@@ -3538,7 +4100,7 @@ export default class GoGameScene {
       moved: false,
       cancelled: false,
       startedAt: Date.now(),
-      canPanBoard: this.isPointInBoardViewport(touch.clientX, touch.clientY),
+      canPanBoard: this.isPointInBoardViewport(touch.clientX, touch.clientY) && !this.isPointInStaticUi(touch.clientX, touch.clientY),
       panStarted: false,
       panStartOffsetX: this.boardOffsetX,
       panStartOffsetY: this.boardOffsetY
@@ -3555,18 +4117,122 @@ export default class GoGameScene {
     this.pendingTap.lastY = touch.clientY;
     const dx = touch.clientX - this.pendingTap.startX;
     const dy = touch.clientY - this.pendingTap.startY;
-    if (dx * dx + dy * dy > 64) {
-      this.pendingTap.moved = true;
-      if (this.pendingTap.canPanBoard) {
+    const dist2 = dx * dx + dy * dy;
+
+    if (this.pendingTap.canPanBoard) {
+      if (dist2 > 64) {
+        this.pendingTap.moved = true;
         this.pendingTap.panStarted = true;
         this.boardOffsetX = this.pendingTap.panStartOffsetX + dx;
         this.boardOffsetY = this.pendingTap.panStartOffsetY + dy;
         this.applyBoardViewTransform();
       }
+      return;
+    }
+
+    // 静态按钮区域在手机端按下时，手指会有轻微滑动。
+    // 这里给 UI 点击更大的容差，避免底部复盘按钮被误判为拖动。
+    if (dist2 > 576) {
+      this.pendingTap.moved = true;
     }
   }
 
+  handleZoomControlTap(x, y) {
+    if (!this.zoomControls || !this.isDesktopLike) return false;
+    const z = this.zoomControls;
+    if (inRect(x, y, z.zoomInBtn.x, z.zoomInBtn.y, z.zoomInBtn.w, z.zoomInBtn.h)) {
+      this.zoomBoardByStep(1);
+      return true;
+    }
+    if (inRect(x, y, z.zoomOutBtn.x, z.zoomOutBtn.y, z.zoomOutBtn.w, z.zoomOutBtn.h)) {
+      this.zoomBoardByStep(-1);
+      return true;
+    }
+    if (inRect(x, y, z.zoomResetBtn.x, z.zoomResetBtn.y, z.zoomResetBtn.w, z.zoomResetBtn.h)) {
+      this.resetBoardZoom();
+      return true;
+    }
+    return false;
+  }
+
   handleTap(x, y) {
+    const now = Date.now();
+    if (this.lastHandledTap && now - this.lastHandledTap.time < 320) {
+      const dx = x - this.lastHandledTap.x;
+      const dy = y - this.lastHandledTap.y;
+      if (dx * dx + dy * dy <= 100) return;
+    }
+    this.lastHandledTap = { x, y, time: now };
+
+    if (this.scoreReviewMode) {
+      if (this.handleZoomControlTap(x, y)) {
+        return;
+      }
+      if (inRect(x, y, this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h)) {
+        this.enterReplayMode();
+        return;
+      }
+      if (inRect(x, y, this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h)) {
+        const targetScene = this.returnScene || this.homeScene;
+        if (targetScene) this.sceneManager.switchTo(targetScene);
+      }
+      return;
+    }
+
+    if (this.replayMode && this.replayControls) {
+      if (this.handleZoomControlTap(x, y)) {
+        return;
+      }
+      if (this.scoreSummary && inRect(x, y, this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h)) {
+        this.enterScoreReviewMode();
+        return;
+      }
+      if (inRect(x, y, this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h)) {
+        const targetScene = this.returnScene || this.homeScene;
+        if (targetScene) this.sceneManager.switchTo(targetScene);
+        return;
+      }
+      if (inRect(x, y, this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h)) {
+        this.jumpReplayToEnd();
+        return;
+      }
+      const controls = this.replayControls;
+      if (inRect(x, y, controls.firstBtn.x, controls.firstBtn.y, controls.firstBtn.w, controls.firstBtn.h)) {
+        this.jumpReplayToStart();
+        return;
+      }
+      if (inRect(x, y, controls.prevBtn.x, controls.prevBtn.y, controls.prevBtn.w, controls.prevBtn.h)) {
+        this.stepReplay(-1);
+        return;
+      }
+      if (inRect(x, y, controls.nextBtn.x, controls.nextBtn.y, controls.nextBtn.w, controls.nextBtn.h)) {
+        this.stepReplay(1);
+        return;
+      }
+      if (inRect(x, y, controls.lastBtn.x, controls.lastBtn.y, controls.lastBtn.w, controls.lastBtn.h)) {
+        this.jumpReplayToEnd();
+        return;
+      }
+      if (inRect(x, y, controls.practiceBtn.x, controls.practiceBtn.y, controls.practiceBtn.w, controls.practiceBtn.h)) {
+        this.startPracticeFromReplay();
+        return;
+      }
+      return;
+    }
+
+    if (this.undoRequestState && this.undoRequestState.dialogVisible && this.undoRequestDialog) {
+      const dialog = this.undoRequestDialog;
+      if (inRect(x, y, dialog.refuseBtn.x, dialog.refuseBtn.y, dialog.refuseBtn.w, dialog.refuseBtn.h)) {
+        this.refuseUndoRequest();
+        return;
+      }
+      if (inRect(x, y, dialog.acceptBtn.x, dialog.acceptBtn.y, dialog.acceptBtn.w, dialog.acceptBtn.h)) {
+        this.acceptUndoRequest();
+        return;
+      }
+      return;
+    }
+
     if (this.scoreRequestState && this.scoreRequestState.dialogVisible && this.scoreRequestDialog) {
       const dialog = this.scoreRequestDialog;
       if (inRect(x, y, dialog.refuseBtn.x, dialog.refuseBtn.y, dialog.refuseBtn.w, dialog.refuseBtn.h)) {
@@ -3583,13 +4249,18 @@ export default class GoGameScene {
     if (this.gameOver && this.victoryDialog) {
       const dialog = this.buildVictoryDialogLayout();
       this.victoryDialog.confirmBtn = dialog.confirmBtn;
-      this.victoryDialog.reviewBtn = dialog.reviewBtn;
+      this.victoryDialog.scoreReviewBtn = dialog.scoreReviewBtn;
+      this.victoryDialog.replayBtn = dialog.replayBtn;
       if (inRect(x, y, dialog.confirmBtn.x, dialog.confirmBtn.y, dialog.confirmBtn.w, dialog.confirmBtn.h)) {
         this.closeVictoryDialogAndReturnHome();
         return;
       }
-      if (dialog.reviewBtn && inRect(x, y, dialog.reviewBtn.x, dialog.reviewBtn.y, dialog.reviewBtn.w, dialog.reviewBtn.h)) {
+      if (dialog.scoreReviewBtn && inRect(x, y, dialog.scoreReviewBtn.x, dialog.scoreReviewBtn.y, dialog.scoreReviewBtn.w, dialog.scoreReviewBtn.h)) {
         this.enterScoreReviewMode();
+        return;
+      }
+      if (dialog.replayBtn && inRect(x, y, dialog.replayBtn.x, dialog.replayBtn.y, dialog.replayBtn.w, dialog.replayBtn.h)) {
+        this.enterReplayMode();
         return;
       }
       return;
@@ -3601,12 +4272,17 @@ export default class GoGameScene {
       return;
     }
 
-    if (this.scoreReviewMode) {
+    if (this.handleZoomControlTap(x, y)) {
       return;
     }
 
     if (inRect(x, y, this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h)) {
       this.requestScoreCount();
+      return;
+    }
+
+    if (inRect(x, y, this.undoRequestBtn.x, this.undoRequestBtn.y, this.undoRequestBtn.w, this.undoRequestBtn.h)) {
+      this.requestUndoTurn();
       return;
     }
 
@@ -3631,6 +4307,11 @@ export default class GoGameScene {
           this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
           this.statusMessage = '已取消换牌';
         }
+        return;
+      }
+
+      if (this.pendingTrapPlacement) {
+        this.cancelPendingTrapPlacement();
         return;
       }
 
@@ -3694,6 +4375,16 @@ export default class GoGameScene {
       } else {
         this.statusMessage = '请点击上方对方卡槽中的一张未使用手牌';
       }
+      return;
+    }
+
+    if (this.pendingTrapPlacement) {
+      const point = this.screenToBoard(x, y);
+      if (!point) {
+        this.statusMessage = '请选择一个空位布设隐藏陷阱，或点下方卡牌取消';
+        return;
+      }
+      this.bindPendingTrapToTarget(point.row, point.col);
       return;
     }
 
@@ -3884,12 +4575,42 @@ export default class GoGameScene {
       return;
     }
 
+    if (this.nextPieceType === 'trap') {
+      this.startConfirmPlacement(point.row, point.col, 'trap', this.currentPlayer);
+      return;
+    }
+
     if (!this.isPlayablePoint(point.row, point.col) || this.board[point.row][point.col] !== EMPTY) {
       this.statusMessage = this.board[point.row][point.col] === EMPTY ? '此处不可落子' : '此处已有棋子';
       return;
     }
 
     this.startConfirmPlacement(point.row, point.col, this.nextPieceType, this.currentPlayer);
+  }
+
+  normalizePointerPoint(point) {
+    if (!point) return null;
+    const x = typeof point.clientX === 'number'
+      ? point.clientX
+      : (typeof point.x === 'number'
+        ? point.x
+        : (typeof point.pageX === 'number' ? point.pageX : null));
+    const y = typeof point.clientY === 'number'
+      ? point.clientY
+      : (typeof point.y === 'number'
+        ? point.y
+        : (typeof point.pageY === 'number' ? point.pageY : null));
+    if (typeof x !== 'number' || typeof y !== 'number') return null;
+    return { clientX: x, clientY: y };
+  }
+
+  getEventPoint(list, index = 0) {
+    if (!list || !list[index]) return null;
+    return this.normalizePointerPoint(list[index]);
+  }
+
+  getPrimaryTouchFromEvent(e) {
+    return this.getEventPoint(e && e.touches, 0) || this.getEventPoint(e && e.changedTouches, 0);
   }
 
   onTouchStart(e) {
@@ -3899,18 +4620,22 @@ export default class GoGameScene {
       return;
     }
 
-    if (this.activeGesture) return;
-    if (this.lastGestureEndAt && Date.now() - this.lastGestureEndAt < 120) return;
-
-    const touch = e.touches && e.touches[0];
+    const touch = this.getPrimaryTouchFromEvent(e);
     if (!touch) return;
+
+    if (this.activeGesture) {
+      if (this.isPointInStaticUi(touch.clientX, touch.clientY)) {
+        this.endBoardGesture();
+      } else {
+        return;
+      }
+    }
+    if (this.lastGestureEndAt && Date.now() - this.lastGestureEndAt < 120) return;
     this.beginTapTracking(touch);
   }
 
   onTouchMove(e) {
-    if (!e.touches || e.touches.length <= 0) return;
-
-    if (e.touches.length >= 2) {
+    if (e.touches && e.touches.length >= 2) {
       this.cancelTapTracking();
       if (!this.activeGesture) {
         this.beginBoardGesture(e.touches);
@@ -3920,7 +4645,9 @@ export default class GoGameScene {
       return;
     }
 
-    this.updateTapTracking(e.touches[0]);
+    const touch = this.getPrimaryTouchFromEvent(e);
+    if (!touch) return;
+    this.updateTapTracking(touch);
   }
 
   onTouchEnd(e) {
@@ -3937,8 +4664,23 @@ export default class GoGameScene {
 
     const pendingTap = this.pendingTap;
     this.pendingTap = null;
-    if (!pendingTap || pendingTap.cancelled || pendingTap.moved) return;
+    if (!pendingTap || pendingTap.cancelled) return;
     if (this.lastGestureEndAt && Date.now() - this.lastGestureEndAt < 120) return;
+
+    const releasePoint = this.getEventPoint(e && e.changedTouches, 0);
+    if (releasePoint) {
+      pendingTap.lastX = releasePoint.clientX;
+      pendingTap.lastY = releasePoint.clientY;
+    }
+
+    const dx = pendingTap.lastX - pendingTap.startX;
+    const dy = pendingTap.lastY - pendingTap.startY;
+    const dist2 = dx * dx + dy * dy;
+    const uiTolerance = 576;
+
+    if (pendingTap.moved) {
+      if (pendingTap.canPanBoard || dist2 > uiTolerance) return;
+    }
 
     this.handleTap(pendingTap.lastX, pendingTap.lastY);
   }
@@ -4012,6 +4754,11 @@ export default class GoGameScene {
       return;
     }
 
+    if (type === 'trap' && this.nextPieceType === type) {
+      this.statusMessage = `已选中${pieceDef.name}卡：先落子，再点一个空位布设隐藏陷阱`;
+      return;
+    }
+
     this.statusMessage = pieceDef.needsDirection
       ? `已选中${pieceDef.name}卡：先点落点，再选方向`
       : `已切回${pieceDef.name}`;
@@ -4077,9 +4824,14 @@ export default class GoGameScene {
     }
 
     this.commitPlacement(row, col, piece, result, { endTurn: false, advanceContracts: true });
+    const contractSource = this.findPiecePositionById(piece.id);
+    if (!contractSource || !this.isPiece(contractSource.cell)) {
+      this.finalizeManualTurn('契约子误踏陷阱：本回合结束');
+      return;
+    }
     this.pendingContractPlacement = {
-      row,
-      col,
+      row: contractSource.row,
+      col: contractSource.col,
       color: this.currentPlayer,
       contractId: piece.id
     };
@@ -4115,9 +4867,14 @@ export default class GoGameScene {
     }
 
     this.commitPlacement(row, col, piece, result, { endTurn: false, advanceContracts: true });
+    const rebirthSource = this.findPiecePositionById(piece.id);
+    if (!rebirthSource || !this.isPiece(rebirthSource.cell)) {
+      this.finalizeManualTurn('重生子误踏陷阱：本回合结束');
+      return;
+    }
     this.pendingRebirthPlacement = {
-      row,
-      col,
+      row: rebirthSource.row,
+      col: rebirthSource.col,
       color: this.currentPlayer,
       pieceId: piece.id
     };
@@ -4153,9 +4910,14 @@ export default class GoGameScene {
     }
 
     this.commitPlacement(row, col, piece, result, { endTurn: false, advanceContracts: true });
+    const fogSource = this.findPiecePositionById(piece.id);
+    if (!fogSource || !this.isPiece(fogSource.cell)) {
+      this.finalizeManualTurn('迷雾子误踏陷阱：本回合结束');
+      return;
+    }
     this.pendingFogPlacement = {
-      row,
-      col,
+      row: fogSource.row,
+      col: fogSource.col,
       color: this.currentPlayer,
       pieceId: piece.id
     };
@@ -4198,6 +4960,10 @@ export default class GoGameScene {
     this.commitPlacement(row, col, piece, result, { endTurn: false, advanceContracts: true });
 
     const source = this.findPiecePositionById(piece.id);
+    if (!source || !this.isPiece(source.cell)) {
+      this.finalizeManualTurn('说客误踏陷阱：本回合结束');
+      return;
+    }
     if (!source || !this.hasAdjacentSingletonEnemy(source.row, source.col, this.currentPlayer)) {
       this.removePieceById(piece.id);
       this.refundCard('persuader');
@@ -4246,15 +5012,89 @@ export default class GoGameScene {
     }
 
     this.commitPlacement(row, col, piece, result, { endTurn: false, advanceContracts: true });
+    const teleportSource = this.findPiecePositionById(piece.id);
+    if (!teleportSource || !this.isPiece(teleportSource.cell)) {
+      this.finalizeManualTurn('瞬移子误踏陷阱：本回合结束');
+      return;
+    }
     this.pendingTeleportPlacement = {
-      row,
-      col,
+      row: teleportSource.row,
+      col: teleportSource.col,
       color: this.currentPlayer,
       pieceId: piece.id,
       targets: []
     };
     this.nextPieceType = 'teleport';
     this.statusMessage = '请选择第 1 个瞬移空位，或点下方卡牌取消';
+  }
+
+
+  startTrapPlacement(row, col) {
+    if (!this.isPlayablePoint(row, col)) return;
+
+    if (!this.hasAvailableCard('trap')) {
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = '这张卡已经用掉了';
+      return;
+    }
+
+    if (this.board[row][col] !== EMPTY) {
+      this.statusMessage = '此处已有棋子';
+      return;
+    }
+
+    const piece = {
+      color: this.currentPlayer,
+      type: 'trap',
+      dir: null,
+      id: this.allocPieceId()
+    };
+
+    const result = this.simulatePlacePiece(this.board, row, col, piece, this.currentPlayer);
+    if (!result.ok) {
+      this.statusMessage = result.message || '落子失败';
+      return;
+    }
+
+    this.commitPlacement(row, col, piece, result, { endTurn: false, advanceContracts: true });
+    const trapSource = this.findPiecePositionById(piece.id);
+    if (!trapSource || !this.isPiece(trapSource.cell)) {
+      this.finalizeManualTurn('陷阱子误踏陷阱：本回合结束，且无法布设新陷阱', { trigger: 'commit', piece: { type: 'trap', color: piece.color } });
+      return;
+    }
+
+    this.pendingTrapPlacement = {
+      row,
+      col,
+      color: this.currentPlayer,
+      pieceId: piece.id
+    };
+    this.nextPieceType = 'trap';
+    this.statusMessage = '请选择一个空位布设隐藏陷阱，或点下方卡牌取消';
+  }
+
+  bindPendingTrapToTarget(row, col) {
+    const pending = this.pendingTrapPlacement;
+    if (!pending) return false;
+
+    const source = this.findPiecePositionById(pending.pieceId);
+    if (!source || !this.isPiece(source.cell) || source.cell.color !== pending.color) {
+      this.clearPendingTrapPlacement();
+      this.nextPieceType = this.pieceConfig.defaultPieceType || 'normal';
+      this.statusMessage = '陷阱子已不存在';
+      return false;
+    }
+
+    const placed = this.placeHiddenTrap(row, col, pending.color);
+    if (!placed.ok) {
+      this.statusMessage = placed.message;
+      return false;
+    }
+
+    this.normalizePieceAt(source.row, source.col);
+    this.clearPendingTrapPlacement();
+    this.finalizeManualTurn(`隐藏陷阱已布设在（${row + 1}, ${col + 1}）`, { trigger: 'commit', piece: { type: 'trap', color: pending.color } });
+    return true;
   }
 
   bindPendingTeleportToTarget(row, col) {
@@ -4298,6 +5138,7 @@ export default class GoGameScene {
       return true;
     }
 
+    this.markUndoSnapshot();
     this.board[found.row][found.col] = createPiece(found.cell.color, found.cell.type, found.cell.dir, found.cell.id, {
       ...found.cell,
       teleportTargets: targets,
@@ -4437,6 +5278,7 @@ export default class GoGameScene {
   }
 
   commitThiefPlacement(fromRow, fromCol, toRow, toCol) {
+    this.markUndoSnapshot();
     const sourcePiece = this.board[fromRow][fromCol];
     if (!this.isPiece(sourcePiece) || sourcePiece.color === this.currentPlayer) {
       this.statusMessage = '所选目标棋子已无效，请重新选择';
@@ -5513,9 +6355,11 @@ export default class GoGameScene {
 
     // 顶部控件始终浮在棋盘之上。
     this.drawTopBar();
+    this.drawDesktopZoomControls();
     this.drawBottomUI();
     this.drawTurnPressureOverlay();
     this.drawScoreRequestDialog();
+    this.drawUndoRequestDialog();
     this.drawVictoryDialog();
   }
 
@@ -5525,13 +6369,21 @@ export default class GoGameScene {
   }
 
   drawTopBar() {
-    const backText = this.scoreReviewMode ? '返回主页' : '返回';
+    const backText = (this.scoreReviewMode || this.replayMode) ? '返回主页' : '返回';
     drawButton(this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h, '#34495e', backText);
     if (this.scoreReviewMode) {
-      drawButton(this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h, '#bdc3c7', '点目结果', 18, '#5f6a6a');
-      drawButton(this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h, '#bdc3c7', '已结束', 18, '#5f6a6a');
+      drawButton(this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h, '#f1c40f', '点目结果', 18, '#3b2a18');
+      drawButton(this.undoRequestBtn.x, this.undoRequestBtn.y, this.undoRequestBtn.w, this.undoRequestBtn.h, '#bdc3c7', '已锁定', 18, '#5f6a6a');
+      drawButton(this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h, '#8e44ad', '终局复盘', 18, '#ffffff');
+    } else if (this.replayMode) {
+      const scoreBtnColor = this.scoreSummary ? '#f1c40f' : '#bdc3c7';
+      const scoreBtnTextColor = this.scoreSummary ? '#3b2a18' : '#5f6a6a';
+      drawButton(this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h, scoreBtnColor, this.scoreSummary ? '点目结果' : '无点目结果', 18, scoreBtnTextColor);
+      drawButton(this.undoRequestBtn.x, this.undoRequestBtn.y, this.undoRequestBtn.w, this.undoRequestBtn.h, '#bdc3c7', '复盘中', 18, '#5f6a6a');
+      drawButton(this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h, '#8e44ad', '终局复盘', 18, '#ffffff');
     } else {
       drawButton(this.scoreRequestBtn.x, this.scoreRequestBtn.y, this.scoreRequestBtn.w, this.scoreRequestBtn.h, '#f1c40f', '申请点目', 20, '#3b2a18');
+      drawButton(this.undoRequestBtn.x, this.undoRequestBtn.y, this.undoRequestBtn.w, this.undoRequestBtn.h, '#e67e22', '申请悔棋', 20, '#3b2a18');
       drawButton(this.restartBtn.x, this.restartBtn.y, this.restartBtn.w, this.restartBtn.h, '#27ae60', '重开');
     }
 
@@ -5542,6 +6394,15 @@ export default class GoGameScene {
 
     this.drawMiniCardPreview('black');
     this.drawMiniCardPreview('white');
+  }
+
+
+  drawDesktopZoomControls() {
+    if (!this.zoomControls || !this.isDesktopLike) return;
+    const z = this.zoomControls;
+    drawButton(z.zoomInBtn.x, z.zoomInBtn.y, z.zoomInBtn.w, z.zoomInBtn.h, '#2c3e50', '+', 26, '#ffffff');
+    drawButton(z.zoomOutBtn.x, z.zoomOutBtn.y, z.zoomOutBtn.w, z.zoomOutBtn.h, '#2c3e50', '−', 28, '#ffffff');
+    drawButton(z.zoomResetBtn.x, z.zoomResetBtn.y, z.zoomResetBtn.w, z.zoomResetBtn.h, '#7f8c8d', '1:1', 14, '#ffffff');
   }
 
   drawMiniCardPreview(color) {
@@ -5686,7 +6547,31 @@ export default class GoGameScene {
     this.drawBoardBackground();
     this.drawBoardLines();
     this.drawBoardPoints();
+    this.drawVisibleTraps();
     this.drawDestroyedCells();
+  }
+
+  drawVisibleTraps() {
+    const traps = Array.isArray(this.trapState) ? this.trapState : [];
+    const pieceDef = getPieceDef(this.pieceMap, 'trap');
+    for (const trap of traps) {
+      if (!this.isTrapVisibleToCurrentPlayer(trap)) continue;
+      if (!this.isPlayablePoint(trap.row, trap.col)) continue;
+      const cell = this.getDisplayBoard()[trap.row][trap.col];
+      if (cell !== EMPTY) continue;
+      const { x, y } = this.boardToScreen(trap.row, trap.col);
+      ctx.save();
+      ctx.fillStyle = 'rgba(139, 69, 19, 0.2)';
+      ctx.beginPath();
+      ctx.arc(x, y, this.cellSize * 0.25, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#8b4513';
+      ctx.font = `bold ${Math.max(12, this.cellSize * 0.34)}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(pieceDef.symbol || '☒', x, y + 1);
+      ctx.restore();
+    }
   }
 
   drawScoreRequestDialog() {
@@ -5721,6 +6606,40 @@ export default class GoGameScene {
     drawButton(dialog.acceptBtn.x, dialog.acceptBtn.y, dialog.acceptBtn.w, dialog.acceptBtn.h, '#f1c40f', '接受', 20, '#3b2a18');
     ctx.restore();
   }
+
+  drawUndoRequestDialog() {
+    if (!this.undoRequestState || !this.undoRequestState.dialogVisible || !this.undoRequestDialog) return;
+
+    const dialog = this.undoRequestDialog;
+    const requesterText = this.getColorName(this.undoRequestState.requester);
+    const responderText = this.getColorName(this.undoRequestState.responder);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+    ctx.fillStyle = '#f7e8c6';
+    ctx.strokeStyle = '#6b4f2c';
+    ctx.lineWidth = 4;
+    ctx.fillRect(dialog.x, dialog.y, dialog.w, dialog.h);
+    ctx.strokeRect(dialog.x, dialog.y, dialog.w, dialog.h);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#3b2a18';
+    ctx.font = 'bold 28px Arial';
+    ctx.fillText('申请悔棋', dialog.x + dialog.w / 2, dialog.y + 42);
+
+    ctx.fillStyle = '#1f1f1f';
+    ctx.font = '20px Arial';
+    ctx.fillText(`${requesterText}申请悔棋`, dialog.x + dialog.w / 2, dialog.y + 92);
+    ctx.fillText(`${responderText}是否同意？`, dialog.x + dialog.w / 2, dialog.y + 124);
+
+    drawButton(dialog.refuseBtn.x, dialog.refuseBtn.y, dialog.refuseBtn.w, dialog.refuseBtn.h, '#95a5a6', '不同意', 20);
+    drawButton(dialog.acceptBtn.x, dialog.acceptBtn.y, dialog.acceptBtn.w, dialog.acceptBtn.h, '#e67e22', '同意', 20, '#3b2a18');
+    ctx.restore();
+  }
+
 
   drawVictoryDialog() {
     if (!this.gameOver || this.isTutorialMode || !this.victoryDialog) return;
@@ -5768,8 +6687,11 @@ export default class GoGameScene {
     }
 
     drawButton(rect.confirmBtn.x, rect.confirmBtn.y, rect.confirmBtn.w, rect.confirmBtn.h, '#27ae60', dialog.confirmText || '确认');
-    if (rect.reviewBtn) {
-      drawButton(rect.reviewBtn.x, rect.reviewBtn.y, rect.reviewBtn.w, rect.reviewBtn.h, '#f1c40f', dialog.reviewText || '查看点目结果', 20, '#3b2a18');
+    if (rect.scoreReviewBtn) {
+      drawButton(rect.scoreReviewBtn.x, rect.scoreReviewBtn.y, rect.scoreReviewBtn.w, rect.scoreReviewBtn.h, '#f1c40f', dialog.scoreReviewText || '查看点目结果', 20, '#3b2a18');
+    }
+    if (rect.replayBtn) {
+      drawButton(rect.replayBtn.x, rect.replayBtn.y, rect.replayBtn.w, rect.replayBtn.h, '#8e44ad', dialog.replayText || '进入复盘', 20, '#ffffff');
     }
     ctx.restore();
   }
@@ -6506,7 +7428,20 @@ export default class GoGameScene {
         : `自动移除死子 ${s.deadRemovedTotal} 枚`;
       ctx.fillText(`黑 ${s.blackScore} 目  白 ${s.whiteScore} 目`, SCREEN_WIDTH / 2, SCREEN_HEIGHT - 64);
       ctx.fillText(extraText, SCREEN_WIDTH / 2, SCREEN_HEIGHT - 42);
-      ctx.fillText('当前仅可查看点目归属，点击左上角返回主页', SCREEN_WIDTH / 2, SCREEN_HEIGHT - 20);
+      ctx.fillText('右上角可返回终局复盘，左上角返回主页', SCREEN_WIDTH / 2, SCREEN_HEIGHT - 20);
+      return;
+    }
+
+    if (this.replayMode && this.replayControls) {
+      const controls = this.replayControls;
+      ctx.fillStyle = '#1f1f1f';
+      ctx.font = 'bold 18px Arial';
+      ctx.fillText(this.buildReplayStatusText(), SCREEN_WIDTH / 2, controls.firstBtn.y - 18);
+      drawButton(controls.firstBtn.x, controls.firstBtn.y, controls.firstBtn.w, controls.firstBtn.h, '#3498db', '第一步', 18);
+      drawButton(controls.prevBtn.x, controls.prevBtn.y, controls.prevBtn.w, controls.prevBtn.h, '#3498db', '上一步', 18);
+      drawButton(controls.nextBtn.x, controls.nextBtn.y, controls.nextBtn.w, controls.nextBtn.h, '#3498db', '下一步', 18);
+      drawButton(controls.lastBtn.x, controls.lastBtn.y, controls.lastBtn.w, controls.lastBtn.h, '#8e44ad', '终局步', 18);
+      drawButton(controls.practiceBtn.x, controls.practiceBtn.y, controls.practiceBtn.w, controls.practiceBtn.h, '#27ae60', '玩残局', 20);
       return;
     }
 

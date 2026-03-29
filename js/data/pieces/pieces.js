@@ -120,6 +120,18 @@ module.exports = {
       behavior: { type: 'none' }
     },
 
+
+    {
+      id: 'trap',
+      name: '陷阱',
+      symbol: '☒',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#8b4513',
+      advanceOrder: 17,
+      behavior: { type: 'none' }
+    },
     {
       id: 'auspice',
       name: '祥瑞',
