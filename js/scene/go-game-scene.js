@@ -85,7 +85,7 @@ export default class GoGameScene {
     this.replayCurrentIndex = 0;
     this.scoreRequestState = null;
     this.scoreSummary = null;
-    this.endgameFlags = this.collectImmortalEndgameFlags(this.board);
+    this.endgameFlags = this.collectEndgameFlags(this.board);
     this.scoreTerritoryMap = null;
     this.scoreReviewBoard = null;
     this.scoreReviewMode = false;
@@ -1160,7 +1160,7 @@ export default class GoGameScene {
     if (!this.scoreRequestState) return;
     const summary = this.calculateTerritoryScore();
     this.scoreSummary = summary;
-    this.endgameFlags = this.deepCloneStateData(summary.endgameFlags) || this.collectImmortalEndgameFlags(this.board);
+    this.endgameFlags = this.deepCloneStateData(summary.endgameFlags) || this.collectEndgameFlags(this.board);
     this.scoreTerritoryMap = summary.territoryMap || null;
     this.scoreReviewBoard = summary.boardAfterDeadRemoval ? this.cloneBoard(summary.boardAfterDeadRemoval) : null;
     this.scoreReviewMode = false;
@@ -1244,7 +1244,7 @@ export default class GoGameScene {
 
     const emptyPoints = this.countEmptyPlayablePoints(scoringBoard);
     const isEstimate = false;
-    const endgameFlags = this.collectImmortalEndgameFlags(scoringBoard);
+    const endgameFlags = this.collectEndgameFlags(scoringBoard);
 
     const summary = {
       blackTerritory,
@@ -1570,11 +1570,16 @@ export default class GoGameScene {
     return { points, borderColors, touchesOutside };
   }
 
-  collectImmortalEndgameFlags(board = this.board) {
+  collectEndgameFlags(board = this.board) {
     const flags = {
       blackImmortalSurvived: false,
       whiteImmortalSurvived: false,
-      immortalSurvival: { black: false, white: false }
+      immortalSurvival: { black: false, white: false },
+      blackGodOfWealthSurvived: false,
+      whiteGodOfWealthSurvived: false,
+      godOfWealthSurvival: { black: false, white: false },
+      goldMultiplier: { black: 1, white: 1 },
+      settlementGoldMultiplier: { black: 1, white: 1 }
     };
 
     if (!Array.isArray(board)) return flags;
@@ -1582,18 +1587,39 @@ export default class GoGameScene {
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
         const cell = board[row] ? board[row][col] : null;
-        if (!this.isPiece(cell) || cell.type !== 'immortal') continue;
-        if (cell.color === BLACK) {
-          flags.blackImmortalSurvived = true;
-          flags.immortalSurvival.black = true;
-        } else if (cell.color === WHITE) {
-          flags.whiteImmortalSurvived = true;
-          flags.immortalSurvival.white = true;
+        if (!this.isPiece(cell)) continue;
+
+        if (cell.type === 'immortal') {
+          if (cell.color === BLACK) {
+            flags.blackImmortalSurvived = true;
+            flags.immortalSurvival.black = true;
+          } else if (cell.color === WHITE) {
+            flags.whiteImmortalSurvived = true;
+            flags.immortalSurvival.white = true;
+          }
+        }
+
+        if (cell.type === 'godofwealth') {
+          if (cell.color === BLACK) {
+            flags.blackGodOfWealthSurvived = true;
+            flags.godOfWealthSurvival.black = true;
+            flags.goldMultiplier.black = 2;
+            flags.settlementGoldMultiplier.black = 2;
+          } else if (cell.color === WHITE) {
+            flags.whiteGodOfWealthSurvived = true;
+            flags.godOfWealthSurvival.white = true;
+            flags.goldMultiplier.white = 2;
+            flags.settlementGoldMultiplier.white = 2;
+          }
         }
       }
     }
 
     return flags;
+  }
+
+  collectImmortalEndgameFlags(board = this.board) {
+    return this.collectEndgameFlags(board);
   }
 
   getImmortalFlagDetail(flags = this.endgameFlags) {
@@ -1606,6 +1632,16 @@ export default class GoGameScene {
     return '终局 flag：双方“不朽”均未存活';
   }
 
+  getGodOfWealthFlagDetail(flags = this.endgameFlags) {
+    if (!flags) return '';
+    const black = !!flags.blackGodOfWealthSurvived;
+    const white = !!flags.whiteGodOfWealthSurvived;
+    if (black && white) return '终局 flag：黑白双方“财神”均存活；金币结算×2';
+    if (black) return '终局 flag：黑方“财神”存活；黑方金币结算×2';
+    if (white) return '终局 flag：白方“财神”存活；白方金币结算×2';
+    return '终局 flag：双方“财神”均未存活；金币结算不加倍';
+  }
+
   openVictoryDialog() {
     if (this.isTutorialMode || !this.gameOver) return;
 
@@ -1613,6 +1649,7 @@ export default class GoGameScene {
     let detail = `${winnerText}获胜。`;
 
     const immortalDetail = this.getImmortalFlagDetail();
+    const godOfWealthDetail = this.getGodOfWealthFlagDetail();
 
     if (this.scoreSummary) {
       const summary = this.scoreSummary;
@@ -1631,6 +1668,9 @@ export default class GoGameScene {
 
     if (immortalDetail) {
       detail = `${detail}；${immortalDetail}`;
+    }
+    if (godOfWealthDetail) {
+      detail = `${detail}；${godOfWealthDetail}`;
     }
 
     this.victoryDialog = {
@@ -6532,7 +6572,7 @@ export default class GoGameScene {
     this.directionButtons = null;
     this.scoreRequestState = null;
     this.scoreSummary = null;
-    this.endgameFlags = this.collectImmortalEndgameFlags(this.board);
+    this.endgameFlags = this.collectEndgameFlags(this.board);
     this.scoreTerritoryMap = null;
     this.scoreReviewMode = false;
     const loserText = this.getColorName(loser);
@@ -6541,7 +6581,7 @@ export default class GoGameScene {
     this.victoryDialog = {
       title: '对局结束',
       message: `${winnerText}赢了`,
-      detail: `${loserText}5分钟倒计时耗尽，判负。；${this.getImmortalFlagDetail(this.endgameFlags)}`,
+      detail: `${loserText}5分钟倒计时耗尽，判负。；${this.getImmortalFlagDetail(this.endgameFlags)}；${this.getGodOfWealthFlagDetail(this.endgameFlags)}`,
       confirmText: '确认返回主界面',
       reviewText: ''
     };

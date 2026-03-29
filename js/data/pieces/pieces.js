@@ -283,6 +283,17 @@ module.exports = {
       behavior: { type: 'none' }
     },
     {
+      id: 'godofwealth',
+      name: '财神',
+      symbol: '$',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#2ecc71',
+      advanceOrder: 13,
+      behavior: { type: 'none' }
+    },
+    {
       id: 'archer',
       name: '弓箭手',
       symbol: '➶',
