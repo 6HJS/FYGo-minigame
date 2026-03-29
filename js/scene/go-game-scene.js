@@ -5943,6 +5943,10 @@ export default class GoGameScene {
     const opponent = this.getOpponent(player);
     const beforeBoardKey = this.getBoardKey(sourceBoard);
 
+    if (piece.type === 'yinyang' && this.isForbiddenYinYangCross(sourceBoard, row, col)) {
+      return { ok: false, message: '此处禁止落阴阳：左上白、右下黑形成反向十字' };
+    }
+
     const nextBoard = this.cloneBoard(sourceBoard);
     nextBoard[row][col] = createPiece(piece.color, piece.type, piece.dir, piece.id || this.allocPieceId());
 
@@ -6111,6 +6115,18 @@ export default class GoGameScene {
       return (dr === 0 && dc === 1) || (dr === 1 && dc === 0);
     }
     return false;
+  }
+
+  isForbiddenYinYangCross(board, row, col) {
+    const left = this.isInside(row, col - 1) ? board[row][col - 1] : INVALID;
+    const up = this.isInside(row - 1, col) ? board[row - 1][col] : INVALID;
+    const right = this.isInside(row, col + 1) ? board[row][col + 1] : INVALID;
+    const down = this.isInside(row + 1, col) ? board[row + 1][col] : INVALID;
+
+    return this.isPiece(left) && left.color === WHITE
+      && this.isPiece(up) && up.color === WHITE
+      && this.isPiece(right) && right.color === BLACK
+      && this.isPiece(down) && down.color === BLACK;
   }
 
   getYinYangSideLibertyKeys(board, row, col, color, visited = null) {
