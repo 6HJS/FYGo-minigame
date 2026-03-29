@@ -2978,12 +2978,15 @@ export default class GoGameScene {
     const plagueInfectedCount = piece.type === 'plague'
       ? this.infectConnectedBlocksFrom(row, col, piece.color)
       : 0;
+    const auspiceInfo = piece.type === 'auspice'
+      ? this.resolveAuspiceDispels()
+      : { plagueCleared: 0, nightmareCleared: 0, totalCleared: 0 };
 
     if (piece.type === 'time_limit') {
       this.armTurnPressure(this.getOpponent(piece.color), 10, piece.color);
     }
 
-    if (piece.type === 'gravity' || piece.type === 'repulsion' || piece.type === 'reverse') {
+    if (piece.type === 'gravity' || piece.type === 'repulsion' || piece.type === 'reverse' || piece.type === 'auspice') {
       this.normalizePieceAt(row, col);
     }
 
@@ -3044,6 +3047,10 @@ export default class GoGameScene {
       this.statusMessage = plagueInfectedCount > 0
         ? `瘟疫扩散，感染 ${plagueInfectedCount} 枚棋子`
         : '瘟疫落下，但周围没有可感染的棋子块';
+    } else if (piece.type === 'auspice') {
+      this.statusMessage = auspiceInfo.totalCleared > 0
+        ? `祥瑞降临，驱散瘟疫 ${auspiceInfo.plagueCleared} 枚、梦魇 ${auspiceInfo.nightmareCleared} 枚`
+        : '祥瑞降临，但场上没有可驱散的瘟疫或梦魇';
     } else if (piece.type === 'time_limit') {
       this.statusMessage = '限时生效：对手下一回合只有 10 秒可落子';
     } else if (piece.type === 'teleport') {
@@ -3323,7 +3330,7 @@ export default class GoGameScene {
           continue;
         }
 
-        if (Math.random() < 0.5) {
+        if (Math.random() < 0.1) {
           toRemove.push([row, col]);
         } else {
           this.board[row][col] = createPiece(cell.color, cell.type, cell.dir, cell.id, {
@@ -3355,6 +3362,50 @@ export default class GoGameScene {
     this.previousBoardKey = this.getBoardKey(this.board);
     this.lastPlagueResolution = { infectedCount, deathCount, recoverCount, vanishedCount };
     return this.lastPlagueResolution;
+  }
+
+
+  resolveAuspiceDispels() {
+    let plagueCleared = 0;
+    let nightmareCleared = 0;
+
+    for (let row = 0; row < BOARD_ROWS; row++) {
+      for (let col = 0; col < BOARD_COLS; col++) {
+        const cell = this.board[row][col];
+        if (!this.isPiece(cell)) continue;
+
+        let changed = false;
+        const extra = { ...cell };
+
+        if (cell.infected) {
+          plagueCleared += 1;
+          changed = true;
+          extra.infected = false;
+          extra.infectionPendingTurns = undefined;
+          extra.infectionSourceColor = undefined;
+          extra.infectionSeedId = undefined;
+        }
+
+        if (cell.nightmareActive || cell.nightmareDir || cell.nightmareOwnerColor || cell.nightmareSourceId) {
+          nightmareCleared += 1;
+          changed = true;
+          extra.nightmareActive = false;
+          extra.nightmareDir = null;
+          extra.nightmareOwnerColor = undefined;
+          extra.nightmareSourceId = undefined;
+        }
+
+        if (changed) {
+          this.board[row][col] = createPiece(cell.color, cell.type, cell.dir, cell.id, extra);
+        }
+      }
+    }
+
+    if (plagueCleared > 0 || nightmareCleared > 0) {
+      this.previousBoardKey = this.getBoardKey(this.board);
+    }
+
+    return { plagueCleared, nightmareCleared, totalCleared: plagueCleared + nightmareCleared };
   }
 
   resolveTurnStartSpecials(player) {

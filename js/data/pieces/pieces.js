@@ -119,6 +119,18 @@ module.exports = {
       advanceOrder: 17,
       behavior: { type: 'none' }
     },
+
+    {
+      id: 'auspice',
+      name: '祥瑞',
+      symbol: '☥',
+      needsDirection: false,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#2ecc71',
+      advanceOrder: 17,
+      behavior: { type: 'none' }
+    },
     {
       id: 'nightmare',
       name: '梦魇',
