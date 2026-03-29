@@ -54,6 +54,29 @@ function handleMoveForward(scene, row, col, piece, pieceDef) {
 
   const occupant = scene.board[nr][nc];
   if (scene.isPiece(occupant)) {
+    const spearDir = occupant && occupant.type === 'spearman' ? dirMap[occupant.dir] : null;
+    const spearFacesAttacker = !!(
+      spearDir &&
+      occupant.color !== piece.color &&
+      nr + spearDir.dr === row &&
+      nc + spearDir.dc === col
+    );
+
+    if (piece.type === 'cavalry' && spearFacesAttacker) {
+      scene.resolvePieceRemovalAt(row, col, {
+        reason: 'special',
+        allowRebirth: true,
+        scoreForColor: occupant.color
+      });
+      scene.lastMove = { row: nr, col: nc };
+      return {
+        moved: false,
+        transformed: false,
+        blockedByEnemy: true,
+        counterKilled: true
+      };
+    }
+
     if (pieceDef.behavior.killOccupant) {
       const isEnemy = occupant.color !== piece.color;
       scene.resolvePieceRemovalAt(nr, nc, {

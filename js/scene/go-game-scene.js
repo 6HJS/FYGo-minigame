@@ -3669,6 +3669,9 @@ export default class GoGameScene {
       return true;
     }
 
+    const spearmanInfo = piece.type === 'spearman'
+      ? this.resolveSpearmanThrust(row, col, piece)
+      : { killedCount: 0, target: null, targetType: null };
     const gravityInfo = piece.type === 'gravity'
       ? this.applyGravityEffect(row, col)
       : { movedCount: 0, vanishedCount: 0 };
@@ -3756,6 +3759,10 @@ export default class GoGameScene {
       this.statusMessage = '请选择一个空位作为重生点';
     } else if (piece.type === 'archer') {
       this.statusMessage = '弓箭手已架弓，下一次轮到你时将朝指定方向射箭';
+    } else if (piece.type === 'spearman') {
+      this.statusMessage = spearmanInfo.killedCount > 0
+        ? `长矛兵突刺得手，击杀 1 枚${spearmanInfo.targetType === 'cavalry' ? '骑兵' : '敌子'}`
+        : '长矛兵已就位，前方没有可刺杀的敌子';
     } else if (contractInfo.chainKillCount > 0) {
       this.statusMessage = `契约触发，同归于尽 ${contractInfo.chainKillCount} 枚`;
     } else if (turnStartInfo.plagueInfo && (turnStartInfo.plagueInfo.deathCount > 0 || turnStartInfo.plagueInfo.recoverCount > 0)) {
@@ -3932,6 +3939,38 @@ export default class GoGameScene {
 
     this.board[row][col] = createPiece(cell.color, 'normal', null, cell.id, preserved);
     return true;
+  }
+
+  resolveSpearmanThrust(row, col, piece) {
+    if (!piece || piece.type !== 'spearman') {
+      return { killedCount: 0, target: null, targetType: null };
+    }
+
+    const move = this.DIRS[piece.dir];
+    if (!move) return { killedCount: 0, target: null, targetType: null };
+
+    const nr = row + move.dr;
+    const nc = col + move.dc;
+    if (!this.isPlayablePoint(nr, nc)) {
+      return { killedCount: 0, target: null, targetType: null };
+    }
+
+    const target = this.board[nr][nc];
+    if (!this.isPiece(target) || target.color === piece.color) {
+      return { killedCount: 0, target: null, targetType: null };
+    }
+
+    const out = this.resolvePieceRemovalAt(nr, nc, {
+      reason: 'special',
+      allowRebirth: true,
+      scoreForColor: piece.color
+    });
+
+    return {
+      killedCount: out && out.removed ? 1 : 0,
+      target: out && out.removed ? { row: nr, col: nc } : null,
+      targetType: out && out.removed ? target.type : null
+    };
   }
 
   armPlacedPiece(row, col, piece) {

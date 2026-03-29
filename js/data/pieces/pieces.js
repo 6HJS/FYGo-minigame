@@ -261,6 +261,17 @@ module.exports = {
     },
 
     {
+      id: 'spearman',
+      name: '长矛兵',
+      symbol: '矛',
+      needsDirection: true,
+      selectable: true,
+      buttonColor: '#8e6e3b',
+      buttonActiveColor: '#7f8c8d',
+      advanceOrder: 13,
+      behavior: { type: 'none' }
+    },
+    {
       id: 'archer',
       name: '弓箭手',
       symbol: '➶',

@@ -59,6 +59,18 @@ export default class CardSelectScene {
       w: this.slotW,
       h: this.slotH
     }));
+    this.slotGroupRect = {
+      x: startX,
+      y: this.slotAreaY,
+      w: totalW,
+      h: this.slotH
+    };
+    this.randomBtn = {
+      x: startX + totalW - 10,
+      y: this.slotAreaY - 26,
+      w: 42,
+      h: 42
+    };
 
     this.poolTitleY = this.slotAreaY + this.slotH + 40;
     this.poolViewport = {
@@ -142,6 +154,43 @@ export default class CardSelectScene {
     }
 
     selectedTypes.push(type);
+  }
+
+  randomizeCurrentSelection() {
+    if (!this.pool.length) return;
+    const candidateIds = this.pool.map((piece) => piece.id);
+    const shuffled = candidateIds.slice();
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = shuffled[i];
+      shuffled[i] = shuffled[j];
+      shuffled[j] = tmp;
+    }
+
+    const nextSelection = shuffled.slice(0, Math.min(this.maxSlots, shuffled.length));
+    if (this.selectingColor === 'white') {
+      this.whiteSelectedTypes = nextSelection;
+    } else {
+      this.blackSelectedTypes = nextSelection;
+    }
+
+    wx.showToast({ title: '已随机选择', icon: 'none' });
+  }
+
+  drawRandomButton() {
+    const btn = this.randomBtn;
+    ctx.save();
+    ctx.fillStyle = '#f3e5c8';
+    ctx.strokeStyle = '#8e6e3b';
+    ctx.lineWidth = 3;
+    ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+    ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+    ctx.fillStyle = '#5b3a1f';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '24px Arial';
+    ctx.fillText('🔀', btn.x + btn.w / 2, btn.y + btn.h / 2 + 1);
+    ctx.restore();
   }
 
   startMatch() {
@@ -266,6 +315,11 @@ export default class CardSelectScene {
       return;
     }
 
+    if (inRect(x, y, this.randomBtn.x, this.randomBtn.y, this.randomBtn.w, this.randomBtn.h)) {
+      this.randomizeCurrentSelection();
+      return;
+    }
+
     if (inRect(x, y, this.backBtn.x, this.backBtn.y, this.backBtn.w, this.backBtn.h)) {
       if (this.selectingColor === 'white') {
         this.selectingColor = 'black';
@@ -356,6 +410,7 @@ export default class CardSelectScene {
     for (let i = 0; i < this.slotRects.length; i++) {
       this.drawSlot(this.slotRects[i], selectedTypes[i], i);
     }
+    this.drawRandomButton();
 
     ctx.fillStyle = '#cfcfcf';
     ctx.font = '14px Arial';
