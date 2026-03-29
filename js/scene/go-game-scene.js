@@ -2641,6 +2641,7 @@ export default class GoGameScene {
 
   clearPendingFogPlacement() {
     this.pendingFogPlacement = null;
+    this.pendingFogConfirmBtn = null;
   }
 
   clearPendingSacrificePlacement() {
@@ -3481,6 +3482,21 @@ export default class GoGameScene {
     this.previousBoardKey = this.getBoardKey(this.board);
     this.clearFog();
     this.handleTutorialPostAction('fog-occupied');
+    return true;
+  }
+
+  selectPendingFogTarget(row, col) {
+    const pending = this.pendingFogPlacement;
+    if (!pending) return false;
+
+    if (!this.isPlayablePoint(row, col)) {
+      this.statusMessage = '请选择棋盘上的一个点预览烟雾范围';
+      return false;
+    }
+
+    pending.previewRow = row;
+    pending.previewCol = col;
+    this.statusMessage = `已预览烟雾范围：以（${row + 1}, ${col + 1}）为中心覆盖 5x5，点绿色对钩确认`;
     return true;
   }
 
@@ -4618,12 +4634,22 @@ export default class GoGameScene {
     }
 
     if (this.pendingFogPlacement) {
-      const point = this.screenToBoard(x, y);
-      if (!point) {
-        this.statusMessage = '请选择棋盘上的一个点投掷烟雾弹，或点下方卡牌取消';
+      const pending = this.pendingFogPlacement;
+      const hitConfirm = this.pendingFogConfirmBtn && inRect(x, y, this.pendingFogConfirmBtn.x, this.pendingFogConfirmBtn.y, this.pendingFogConfirmBtn.w, this.pendingFogConfirmBtn.h);
+      if (hitConfirm) {
+        if (pending.previewRow == null || pending.previewCol == null) {
+          this.statusMessage = '请先选一个烟雾中心点，再点绿色对钩确认';
+        } else {
+          this.bindPendingFogToTarget(pending.previewRow, pending.previewCol);
+        }
         return;
       }
-      this.bindPendingFogToTarget(point.row, point.col);
+      const point = this.screenToBoard(x, y);
+      if (!point) {
+        this.statusMessage = '请选择棋盘上的一个点预览烟雾范围，再点绿色对钩确认，或点下方卡牌取消';
+        return;
+      }
+      this.selectPendingFogTarget(point.row, point.col);
       return;
     }
 
@@ -5135,10 +5161,13 @@ export default class GoGameScene {
       row: fogSource.row,
       col: fogSource.col,
       color: this.currentPlayer,
-      pieceId: piece.id
+      pieceId: piece.id,
+      previewRow: null,
+      previewCol: null
     };
+    this.pendingFogConfirmBtn = null;
     this.nextPieceType = 'fog';
-    this.statusMessage = '请选择棋盘上的任意一点投掷烟雾弹，或点下方卡牌取消';
+    this.statusMessage = '请选择棋盘上的任意一点预览烟雾范围，再点绿色对钩确认，或点下方卡牌取消';
   }
 
   startPersuaderPlacement(row, col) {
@@ -7288,6 +7317,7 @@ export default class GoGameScene {
 
   drawPendingFogTargetHint() {
     const pending = this.pendingFogPlacement;
+    this.pendingFogConfirmBtn = null;
     if (!pending) return;
 
     const found = this.findPiecePositionById(pending.pieceId);
@@ -7306,7 +7336,57 @@ export default class GoGameScene {
     ctx.font = `${Math.max(10, this.cellSize * 0.28)}px Arial`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('选烟雾点', x, y - this.cellSize * 0.62);
+    ctx.fillText(pending.previewRow == null || pending.previewCol == null ? '选烟雾点' : '已选烟雾点', x, y - this.cellSize * 0.62);
+    ctx.restore();
+
+    if (pending.previewRow == null || pending.previewCol == null) return;
+
+    const center = this.boardToScreen(pending.previewRow, pending.previewCol);
+    const size = this.cellSize * 5;
+    const left = center.x - size / 2;
+    const top = center.y - size / 2;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(150, 150, 150, 0.14)';
+    ctx.strokeStyle = 'rgba(120, 120, 120, 0.95)';
+    ctx.lineWidth = Math.max(2, this.cellSize * 0.08);
+    ctx.setLineDash([8, 6]);
+    ctx.fillRect(left, top, size, size);
+    ctx.strokeRect(left, top, size, size);
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = 'rgba(60, 60, 60, 0.88)';
+    ctx.font = `bold ${Math.max(10, this.cellSize * 0.26)}px Arial`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('烟雾范围 5x5', left + 4, top - 4);
+    ctx.restore();
+
+    const btnSize = Math.max(22, this.cellSize * 0.5);
+    const btn = {
+      x: left + size - btnSize * 0.5,
+      y: top - btnSize * 0.6,
+      w: btnSize,
+      h: btnSize
+    };
+    this.pendingFogConfirmBtn = {
+      x: btn.x - Math.max(8, btnSize * 0.2),
+      y: btn.y - Math.max(8, btnSize * 0.2),
+      w: btn.w + Math.max(16, btnSize * 0.4),
+      h: btn.h + Math.max(16, btnSize * 0.4)
+    };
+
+    ctx.save();
+    ctx.fillStyle = '#2ecc71';
+    ctx.strokeStyle = '#145a32';
+    ctx.lineWidth = 2;
+    ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+    ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.max(12, btnSize * 0.62)}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('✓', btn.x + btn.w / 2, btn.y + btn.h / 2 + 1);
     ctx.restore();
   }
 
