@@ -3517,7 +3517,7 @@ export default class GoGameScene {
       : 0;
     const auspiceInfo = piece.type === 'auspice'
       ? this.resolveAuspiceDispels()
-      : { plagueCleared: 0, nightmareCleared: 0, totalCleared: 0 };
+      : { plagueCleared: 0, nightmareCleared: 0, trapCleared: 0, totalCleared: 0 };
 
     if (piece.type === 'time_limit') {
       this.armTurnPressure(this.getOpponent(piece.color), 10, piece.color);
@@ -3586,8 +3586,8 @@ export default class GoGameScene {
         : '瘟疫落下，但周围没有可感染的棋子块';
     } else if (piece.type === 'auspice') {
       this.statusMessage = auspiceInfo.totalCleared > 0
-        ? `祥瑞降临，驱散瘟疫 ${auspiceInfo.plagueCleared} 枚、梦魇 ${auspiceInfo.nightmareCleared} 枚`
-        : '祥瑞降临，但场上没有可驱散的瘟疫或梦魇';
+        ? `祥瑞降临，驱散瘟疫 ${auspiceInfo.plagueCleared} 枚、梦魇 ${auspiceInfo.nightmareCleared} 枚、陷阱 ${auspiceInfo.trapCleared} 处`
+        : '祥瑞降临，但场上没有可驱散的瘟疫、梦魇或陷阱';
     } else if (piece.type === 'time_limit') {
       this.statusMessage = '限时生效：对手下一回合只有 10 秒可落子';
     } else if (piece.type === 'teleport') {
@@ -3910,6 +3910,7 @@ export default class GoGameScene {
   resolveAuspiceDispels() {
     let plagueCleared = 0;
     let nightmareCleared = 0;
+    let trapCleared = 0;
 
     for (let row = 0; row < BOARD_ROWS; row++) {
       for (let col = 0; col < BOARD_COLS; col++) {
@@ -3943,11 +3944,21 @@ export default class GoGameScene {
       }
     }
 
-    if (plagueCleared > 0 || nightmareCleared > 0) {
+    if (Array.isArray(this.trapState) && this.trapState.length > 0) {
+      trapCleared = this.trapState.length;
+      this.trapState = [];
+    }
+
+    if (plagueCleared > 0 || nightmareCleared > 0 || trapCleared > 0) {
       this.previousBoardKey = this.getBoardKey(this.board);
     }
 
-    return { plagueCleared, nightmareCleared, totalCleared: plagueCleared + nightmareCleared };
+    return {
+      plagueCleared,
+      nightmareCleared,
+      trapCleared,
+      totalCleared: plagueCleared + nightmareCleared + trapCleared
+    };
   }
 
   resolveTurnStartSpecials(player) {
@@ -6560,16 +6571,27 @@ export default class GoGameScene {
       const cell = this.getDisplayBoard()[trap.row][trap.col];
       if (cell !== EMPTY) continue;
       const { x, y } = this.boardToScreen(trap.row, trap.col);
+      const boxSize = this.cellSize * 0.72;
+      const half = boxSize / 2;
       ctx.save();
-      ctx.fillStyle = 'rgba(139, 69, 19, 0.2)';
-      ctx.beginPath();
-      ctx.arc(x, y, this.cellSize * 0.25, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#8b4513';
-      ctx.font = `bold ${Math.max(12, this.cellSize * 0.34)}px Arial`;
+      ctx.fillStyle = 'rgba(160, 160, 160, 0.14)';
+      ctx.fillRect(x - half, y - half, boxSize, boxSize);
+      ctx.strokeStyle = 'rgba(110, 110, 110, 0.95)';
+      ctx.lineWidth = Math.max(1.5, this.cellSize * 0.04);
+      if (typeof ctx.setLineDash === 'function') {
+        ctx.setLineDash([Math.max(4, this.cellSize * 0.12), Math.max(3, this.cellSize * 0.08)]);
+      }
+      ctx.strokeRect(x - half, y - half, boxSize, boxSize);
+      if (typeof ctx.setLineDash === 'function') {
+        ctx.setLineDash([]);
+      }
+      ctx.fillStyle = '#555';
+      ctx.font = `bold ${Math.max(12, this.cellSize * 0.24)}px Arial`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(pieceDef.symbol || '☒', x, y + 1);
+      ctx.fillText(pieceDef.symbol || '☒', x, y - this.cellSize * 0.13);
+      ctx.font = `bold ${Math.max(10, this.cellSize * 0.18)}px Arial`;
+      ctx.fillText('陷阱', x, y + this.cellSize * 0.16);
       ctx.restore();
     }
   }
