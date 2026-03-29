@@ -91,7 +91,6 @@ export default class OnlineClient {
     this.roomSubscribeTimer = null;
     this.roomSubscribeAttempts = 0;
     this.roomSubscribeResolve = null;
-    this.roomSubscribeExpectedAt = 0;
     debugLog('INIT', { httpBaseUrl: this.config && this.config.httpBaseUrl, wsUrl: this.config && this.config.wsUrl, useCloudContainerForHttp: !!(this.config && this.config.useCloudContainerForHttp), deviceId: this.deviceId, forceTakeover: this.forceTakeover });
   }
 
@@ -304,15 +303,11 @@ export default class OnlineClient {
         expectedRoomId &&
         payloadRoomId &&
         payloadRoomId === expectedRoomId &&
-        (payload.type === 'room_state' || payload.type === 'presence' || payload.type === 'room_joined')
+        (payload.type === 'room_state' || payload.type === 'presence')
       ) {
-        const wasSubscribed = this.subscribedRoomId === payloadRoomId;
         this.subscribedRoomId = payloadRoomId;
         this.desiredRoomId = payloadRoomId;
         this.stopRoomSubscriptionLoop(true);
-        if (!wasSubscribed) {
-          this.emitStatus({ type: 'room_subscribed', roomId: payloadRoomId });
-        }
         debugLog('WS_ROOM_SYNC_CONFIRMED', { roomId: payloadRoomId, payloadType: payload.type });
       }
       this.emitMessage(payload);
@@ -359,7 +354,7 @@ export default class OnlineClient {
 
   stopRoomSubscriptionLoop(success = false) {
     if (this.roomSubscribeTimer) {
-      clearTimeout(this.roomSubscribeTimer);
+      clearInterval(this.roomSubscribeTimer);
       this.roomSubscribeTimer = null;
     }
     this.roomSubscribeAttempts = 0;
@@ -387,11 +382,7 @@ export default class OnlineClient {
       debugLog('ROOM_SUBSCRIBE_LOOP_WAIT_SOCKET', { roomId });
       return;
     }
-    if (this.roomSubscribeTimer) {
-      return;
-    }
-    this.roomSubscribeAttempts = 0;
-    const attemptSubscribe = () => {
+    const sendSubscribe = () => {
       if (!this.isSocketOpen || !this.socketTask) return;
       if (this.subscribedRoomId === roomId) {
         this.stopRoomSubscriptionLoop(true);
@@ -400,19 +391,18 @@ export default class OnlineClient {
       this.roomSubscribeAttempts += 1;
       debugLog('ROOM_SUBSCRIBE_LOOP_SEND', { roomId, attempt: this.roomSubscribeAttempts });
       this.send({ type: 'subscribe_room', roomId });
-      if (this.roomSubscribeAttempts >= 3) {
+      if (this.roomSubscribeAttempts >= 12) {
+        debugLog('ROOM_SUBSCRIBE_LOOP_MAX_ATTEMPTS', { roomId, attempts: this.roomSubscribeAttempts });
         this.stopRoomSubscriptionLoop(false);
-        return;
       }
-      this.roomSubscribeTimer = setTimeout(() => {
-        this.roomSubscribeTimer = null;
-        attemptSubscribe();
-      }, 900);
     };
-    this.roomSubscribeTimer = setTimeout(() => {
-      this.roomSubscribeTimer = null;
-      attemptSubscribe();
-    }, 450);
+    if (!this.roomSubscribeTimer) {
+      this.roomSubscribeAttempts = 0;
+      sendSubscribe();
+      this.roomSubscribeTimer = setInterval(sendSubscribe, 350);
+    } else {
+      sendSubscribe();
+    }
   }
 
   async ensureRoomSubscribed(targetRoomId = this.roomId) {
@@ -549,12 +539,8 @@ export default class OnlineClient {
     try {
       await this.ensureRoomSubscribed(this.roomId);
       result.subscriptionPending = false;
-      try {
-        const fresh = await this.fetchRoomState(this.roomId);
-        if (fresh && fresh.room) result.room = fresh.room;
-      } catch (err2) {}
     } catch (err) {
-      result.subscriptionPending = true;
+      result.subscriptionPending = !authoritativeRoom;
       result.subscriptionWarning = err && err.message ? err.message : '房间订阅确认超时';
       debugLog('CREATE_ROOM_SUBSCRIBE_DEFERRED', { roomId: this.roomId || null, warning: result.subscriptionWarning, httpRoomReady: !!authoritativeRoom });
     }
@@ -585,12 +571,8 @@ export default class OnlineClient {
     try {
       await this.ensureRoomSubscribed(this.roomId);
       result.subscriptionPending = false;
-      try {
-        const fresh = await this.fetchRoomState(this.roomId);
-        if (fresh && fresh.room) result.room = fresh.room;
-      } catch (err2) {}
     } catch (err) {
-      result.subscriptionPending = true;
+      result.subscriptionPending = !authoritativeRoom;
       result.subscriptionWarning = err && err.message ? err.message : '房间订阅确认超时';
       debugLog('QUICK_MATCH_SUBSCRIBE_DEFERRED', { roomId: this.roomId || null, warning: result.subscriptionWarning, httpRoomReady: !!authoritativeRoom });
     }
@@ -647,12 +629,8 @@ export default class OnlineClient {
     try {
       await this.ensureRoomSubscribed(this.roomId);
       result.subscriptionPending = false;
-      try {
-        const fresh = await this.fetchRoomState(this.roomId);
-        if (fresh && fresh.room) result.room = fresh.room;
-      } catch (err2) {}
     } catch (err) {
-      result.subscriptionPending = true;
+      result.subscriptionPending = !authoritativeRoom;
       result.subscriptionWarning = err && err.message ? err.message : '房间订阅确认超时';
       debugLog('JOIN_ROOM_SUBSCRIBE_DEFERRED', { roomId: this.roomId || null, warning: result.subscriptionWarning, httpRoomReady: !!authoritativeRoom });
     }

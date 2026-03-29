@@ -114,6 +114,7 @@ export default class GoGameScene {
     this.onlineActionPending = false;
     this.onlineLastVersion = 0;
     this.onlinePendingMove = null;
+    this.onlineInitialSyncSent = false;
     this.boundOnlineClientMessage = null;
     this.boundOnlineClientStatus = null;
     this.resetGame();
@@ -1865,12 +1866,16 @@ export default class GoGameScene {
       if (!currentRoomId || roomId !== currentRoomId) return;
       if (payload.room) {
         this.applyOnlineRoom(payload.room, this.onlinePlayerColor);
+      } else if (this.onlineClient && typeof this.onlineClient.fetchRoomState === 'function') {
+        this.onlineClient.fetchRoomState(currentRoomId).catch(() => {});
       }
       return;
     }
   }
 
-  startOnlineStatePolling() {}
+  startOnlineStatePolling() {
+    this.stopOnlineStatePolling();
+  }
 
   stopOnlineStatePolling() {
     if (this.onlineStatePollTimer) {
@@ -1889,10 +1894,18 @@ export default class GoGameScene {
     this.onlinePlayerColor = options.playerColor || this.onlinePlayerColor || '';
     this.onlineActionPending = false;
     this.onlinePendingMove = null;
+    this.onlineInitialSyncSent = false;
     this.returnScene = this.onlineScene || this.returnScene || this.homeScene || null;
     this.attachOnlineClientListeners();
     if (room) this.applyOnlineRoom(room, this.onlinePlayerColor);
-    this.startOnlineStatePolling();
+    if (room && room.phase === 'playing' && (!room.state || !room.state.fullState) && this.onlinePlayerColor === 'black' && !this.onlineInitialSyncSent) {
+      this.onlineInitialSyncSent = true;
+      setTimeout(() => {
+        if (this.isOnlineMode && this.onlineClient && this.onlineRoomId === room.roomId) {
+          this.queueOnlineFullStateSync('initial_sync').catch(() => {});
+        }
+      }, 80);
+    }
   }
 
   clearOnlineMode() {
@@ -1905,10 +1918,55 @@ export default class GoGameScene {
     this.onlineActionPending = false;
     this.onlineLastVersion = 0;
     this.onlinePendingMove = null;
+    this.onlineInitialSyncSent = false;
   }
 
   getOnlinePlayerColorConst() {
     return this.onlinePlayerColor === 'white' ? WHITE : BLACK;
+  }
+
+  canOnlinePlayerAct() {
+    if (!this.isOnlineMode) return true;
+    if (!this.onlineRoomState || this.gameOver) return false;
+    if ((this.onlineRoomState.phase || '').toLowerCase() !== 'playing') return false;
+    return this.currentPlayer === this.getOnlinePlayerColorConst();
+  }
+
+  buildOnlineFullSyncPayload() {
+    const fullState = this.captureUndoSnapshot();
+    const currentKey = this.currentPlayer === WHITE ? 'white' : 'black';
+    const winnerKey = this.winner === WHITE ? 'white' : (this.winner === BLACK ? 'black' : null);
+    const remainMs = Math.max(0, Number((this.turnTimers || {})[currentKey] || (this.onlineRoomState && this.onlineRoomState.turnTimeMs) || 30000));
+    return {
+      fullState,
+      currentPlayer: currentKey,
+      phase: this.gameOver ? 'ended' : 'playing',
+      winner: winnerKey,
+      endedReason: this.gameOver ? ((this.victoryDialog && this.victoryDialog.detail && String(this.victoryDialog.detail).replace(/^结束原因：/, '')) || 'game_over') : null,
+      deadlineAt: this.gameOver ? null : (Date.now() + remainMs),
+      turnTimeMs: Number((this.onlineRoomState && this.onlineRoomState.turnTimeMs) || 30000)
+    };
+  }
+
+  captureOnlineSyncDigest() {
+    try {
+      return JSON.stringify(this.buildOnlineFullSyncPayload());
+    } catch (err) {
+      return '';
+    }
+  }
+
+  async queueOnlineFullStateSync(reason = 'state_changed') {
+    if (!this.isOnlineMode || !this.onlineClient || !this.onlineRoomId) return false;
+    try {
+      await this.onlineClient.sendAction({ type: 'sync_state', snapshot: this.buildOnlineFullSyncPayload(), reason });
+      this.onlineActionPending = false;
+      this.onlinePendingMove = null;
+      return true;
+    } catch (err) {
+      this.statusMessage = `在线同步失败：${err && err.message ? err.message : '未知错误'}`;
+      return false;
+    }
   }
 
   applyOnlineRoom(room, playerColor = this.onlinePlayerColor) {
@@ -1916,11 +1974,41 @@ export default class GoGameScene {
     if (playerColor) this.onlinePlayerColor = playerColor;
     if (room.roomId) this.onlineRoomId = room.roomId;
     this.onlineRoomState = room;
-    if (this.isOnlineMode && !this.onlineStatePollTimer) this.startOnlineStatePolling();
     const snapshot = room.state || {};
     const version = Number(snapshot.version || 0);
     if (version && version < this.onlineLastVersion) return;
     this.onlineLastVersion = version || this.onlineLastVersion;
+
+    if (snapshot.fullState) {
+      this.restoreUndoSnapshot(snapshot.fullState);
+      if (snapshot.currentPlayer === 'white') this.currentPlayer = WHITE;
+      else if (snapshot.currentPlayer === 'black') this.currentPlayer = BLACK;
+      this.syncActivePlayerCardState();
+      this.lastTimerUpdateAt = Date.now();
+      this.onlineActionPending = false;
+      this.onlinePendingMove = null;
+      if (snapshot.phase === 'ended' || room.phase === 'ended') {
+        this.gameOver = true;
+        this.winner = snapshot.winner === 'white' ? WHITE : (snapshot.winner === 'black' ? BLACK : null);
+        const winnerText = this.winner ? this.getColorName(this.winner) : '对局结束';
+        const reason = snapshot.endedReason || '服务器结算';
+        this.statusMessage = this.winner ? `${winnerText}获胜（${reason}）` : `对局结束（${reason}）`;
+        this.victoryDialog = {
+          title: '在线对局结束',
+          message: this.winner ? `${winnerText}赢了` : '对局结束',
+          detail: `结束原因：${reason}`,
+          confirmText: '返回在线大厅',
+          reviewText: ''
+        };
+      } else {
+        this.gameOver = false;
+        this.victoryDialog = null;
+        const myTurn = this.currentPlayer === this.getOnlinePlayerColorConst();
+        const phaseText = room.phase === 'waiting' ? '等待对手加入' : (myTurn ? '轮到你落子' : '等待对方落子');
+        this.statusMessage = `在线房间 ${this.onlineRoomId}｜${phaseText}`;
+      }
+      return;
+    }
 
     const boardSize = Number(snapshot.size || 0);
     if (boardSize > 0 && boardSize !== BOARD_ROWS) {
@@ -2000,31 +2088,7 @@ export default class GoGameScene {
 
   async submitOnlineMove(row, col) {
     if (!this.isOnlineMode || !this.onlineClient) return false;
-    if (this.onlineActionPending) {
-      this.statusMessage = '上一手正在等待服务器确认';
-      return false;
-    }
-    const myColor = this.getOnlinePlayerColorConst();
-    if (this.currentPlayer !== myColor) {
-      this.statusMessage = '还没轮到你';
-      return false;
-    }
-    if (!this.isPlayablePoint(row, col) || this.board[row][col] !== EMPTY) {
-      this.statusMessage = '此处不可落子';
-      return false;
-    }
-    this.onlineActionPending = true;
-    this.onlinePendingMove = { row, col };
-    this.statusMessage = `已发送落子（${row + 1}, ${col + 1}），等待服务器确认`;
-    try {
-      await this.onlineClient.sendAction({ type: 'move', x: col, y: row });
-      return true;
-    } catch (err) {
-      this.onlineActionPending = false;
-      this.onlinePendingMove = null;
-      this.statusMessage = `在线落子失败：${err && err.message ? err.message : '未知错误'}`;
-      return false;
-    }
+    return this.queueOnlineFullStateSync('manual_sync');
   }
 
   prepareMatch(options = {}) {
@@ -4860,17 +4924,12 @@ export default class GoGameScene {
       return;
     }
 
-    if (this.isOnlineMode) {
-      if (this.gameOver) {
-        return;
-      }
-      const point = this.screenToBoard(x, y);
-      if (!point) return;
-      this.submitOnlineMove(point.row, point.col);
+    if (this.gameOver) {
       return;
     }
 
-    if (this.gameOver) {
+    if (this.isOnlineMode && !this.canOnlinePlayerAct()) {
+      this.statusMessage = this.onlineRoomState && this.onlineRoomState.phase === 'waiting' ? '等待对手加入' : '等待对方落子';
       return;
     }
 
@@ -5270,7 +5329,12 @@ export default class GoGameScene {
       if (pendingTap.canPanBoard || dist2 > uiTolerance) return;
     }
 
+    const beforeDigest = this.isOnlineMode ? this.captureOnlineSyncDigest() : '';
     this.handleTap(pendingTap.lastX, pendingTap.lastY);
+    const afterDigest = this.isOnlineMode ? this.captureOnlineSyncDigest() : '';
+    if (this.isOnlineMode && beforeDigest && afterDigest && beforeDigest !== afterDigest) {
+      this.queueOnlineFullStateSync('tap_commit').catch(() => {});
+    }
   }
 
   toggleNextSpecialPiece(type) {

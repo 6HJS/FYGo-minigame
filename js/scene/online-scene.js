@@ -30,7 +30,6 @@ export default class OnlineScene {
     this.playerColor = '';
     this.skipAutoHangupOnLeave = false;
     this.enteredGameRoomId = '';
-    this.lastPresenceFetchAt = 0;
 
     if (this.onlineClient) {
       this.boundMessage = this.handleClientMessage.bind(this);
@@ -46,7 +45,6 @@ export default class OnlineScene {
       return;
     }
     this.enteredGameRoomId = '';
-    this.lastPresenceFetchAt = 0;
     if (this.onlineClient && typeof this.onlineClient.autoHangup === 'function') {
       this.onlineClient.autoHangup('leave_online_scene');
     }
@@ -54,7 +52,6 @@ export default class OnlineScene {
 
   onEnter() {
     this.enteredGameRoomId = '';
-    this.lastPresenceFetchAt = 0;
     if (this.gameScene && this.gameScene.isOnlineMode && this.gameScene.onlineRoomId) {
       this.roomId = this.gameScene.onlineRoomId;
     }
@@ -120,22 +117,11 @@ export default class OnlineScene {
       const roomId = String(payload.roomId || (payload.room && payload.room.roomId) || '').trim().toUpperCase();
       const currentRoomId = String(this.roomId || '').trim().toUpperCase();
       if (payload.room && roomId && currentRoomId && roomId === currentRoomId) {
-        const room = payload.room;
-        this.statusText = `房间 ${room.roomId} | ${room.phase || 'waiting'}`;
-        if (this.playerColor && room.phase === 'playing') {
-          this.enterGameScene(room);
+        if (this.gameScene && this.gameScene.isOnlineMode && this.gameScene.onlineRoomId === roomId && typeof this.gameScene.applyOnlineRoom === 'function') {
+          this.gameScene.applyOnlineRoom(payload.room, this.playerColor || '');
         }
-        return;
-      }
-      if (
-        roomId && currentRoomId && roomId === currentRoomId &&
-        this.onlineClient && typeof this.onlineClient.fetchRoomState === 'function'
-      ) {
-        const now = Date.now();
-        if (!this.lastPresenceFetchAt || now - this.lastPresenceFetchAt > 1500) {
-          this.lastPresenceFetchAt = now;
-          this.onlineClient.fetchRoomState(roomId).catch(() => {});
-        }
+      } else if (roomId && currentRoomId && roomId === currentRoomId && this.onlineClient && typeof this.onlineClient.fetchRoomState === 'function') {
+        this.onlineClient.fetchRoomState(roomId).catch(() => {});
       }
     } else if (payload.type === 'room_joined') {
       this.statusText = `加入房间 ${payload.roomId}`;

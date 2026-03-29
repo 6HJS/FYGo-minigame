@@ -113,7 +113,7 @@ function tryAutoSubscribe(ws, trigger = 'connection_open') {
     log('WS_AUTO_SUBSCRIBE_SUCCESS', { trigger, roomId: mappedRoomId, playerId, color: auth.color, room: roomSummary(auth.room) });
     safeJson(ws, { type: 'room_joined', roomId: mappedRoomId, color: auth.color });
     safeJson(ws, { type: 'room_state', room: rooms.getRoomPublic(auth.room) });
-    broadcastRoom(auth.room, { type: 'presence', roomId: mappedRoomId, playerId, online: true, room: rooms.getRoomPublic(auth.room) });
+    broadcastRoom(auth.room, { type: 'presence', roomId: mappedRoomId, playerId, online: true });
     return true;
   } catch (err) {
     warn('WS_AUTO_SUBSCRIBE_FAIL', { trigger, playerId, mappedRoomId, error: err && err.message ? err.message : String(err) });
@@ -167,7 +167,7 @@ wss.on('connection', (ws, req) => {
         log('WS_SUBSCRIBE_ROOM_SUCCESS', { roomId, playerId: ws.playerId || null, color: auth.color, room: roomSummary(auth.room) });
         safeJson(ws, { type: 'room_joined', roomId, color: auth.color });
         safeJson(ws, { type: 'room_state', room: rooms.getRoomPublic(auth.room) });
-        broadcastRoom(auth.room, { type: 'presence', roomId, playerId: ws.playerId, online: true, room: rooms.getRoomPublic(auth.room) });
+        broadcastRoom(auth.room, { type: 'presence', roomId, playerId: ws.playerId, online: true });
         return;
       }
 
@@ -201,7 +201,7 @@ wss.on('connection', (ws, req) => {
     if (roomId && rooms.rooms.has(roomId)) {
       const room = rooms.rooms.get(roomId);
       log('WS_CLOSE_ROOM_STILL_EXISTS', { roomId, room: roomSummary(room) });
-      broadcastRoom(room, { type: 'presence', roomId, playerId: ws.playerId, online: false, room: rooms.getRoomPublic(room) });
+      broadcastRoom(room, { type: 'presence', roomId, playerId: ws.playerId, online: false });
       broadcastRoom(room, { type: 'room_state', room: rooms.getRoomPublic(room) });
     }
   });

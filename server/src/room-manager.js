@@ -8,6 +8,75 @@ function now() {
   return Date.now();
 }
 
+function cloneData(data) {
+  return data == null ? data : JSON.parse(JSON.stringify(data));
+}
+
+class FullSyncState {
+  constructor({ turnTimeMs = 30000, snapshot = null, version = 1 } = {}) {
+    this.turnTimeMs = Number(turnTimeMs || 30000);
+    this.version = Number(version || 1);
+    this.data = snapshot && typeof snapshot === 'object'
+      ? cloneData(snapshot)
+      : {
+          size: 9,
+          board: [],
+          currentPlayer: 'black',
+          turnNumber: 1,
+          moveNumber: 0,
+          captures: { black: 0, white: 0 },
+          passCount: 0,
+          phase: 'waiting',
+          winner: null,
+          endedReason: null,
+          deadlineAt: null,
+          version: this.version
+        };
+    if (!this.data.version) this.data.version = this.version;
+  }
+
+  snapshot() {
+    return cloneData(this.data);
+  }
+
+  start() {
+    this.data.phase = 'playing';
+    if (!this.data.deadlineAt) this.data.deadlineAt = Date.now() + this.turnTimeMs;
+    this.version = Math.max(this.version, Number(this.data.version || 0));
+    this.data.version = this.version;
+    return this.snapshot();
+  }
+
+  applySyncState(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') throw new Error('缺少完整状态快照');
+    const next = cloneData(snapshot);
+    this.version = Math.max(this.version + 1, Number(next.version || 0) || 0);
+    next.version = this.version;
+    if (next.phase === 'playing' && !next.deadlineAt) {
+      next.deadlineAt = Date.now() + this.turnTimeMs;
+    }
+    this.data = next;
+    return this.snapshot();
+  }
+
+  applyAction(action) {
+    if (!action || typeof action !== 'object') throw new Error('非法 action');
+    if (action.type !== 'sync_state') throw new Error(`未知 action: ${action.type}`);
+    return this.applySyncState(action.snapshot || action.state || action.fullState);
+  }
+
+  forceTimeoutLose(color) {
+    if (this.data.phase !== 'playing') return this.snapshot();
+    this.version += 1;
+    this.data.phase = 'ended';
+    this.data.endedReason = 'timeout';
+    this.data.winner = color === 'black' ? 'white' : 'black';
+    this.data.deadlineAt = null;
+    this.data.version = this.version;
+    return this.snapshot();
+  }
+}
+
 export default class RoomManager {
   constructor({ roomExpireMs = 2 * 60 * 60 * 1000, matchQueueExpireMs = 60000 } = {}) {
     this.rooms = new Map();
@@ -273,9 +342,22 @@ export default class RoomManager {
   applyAction(roomId, playerId, playerToken, action) {
     const { room, color } = this.authenticateRoomPlayer(roomId, playerId, playerToken);
     log('APPLY_ACTION_REQUEST', { roomId, playerId, color, actionType: action && action.type ? action.type : null, action });
-    const snapshot = room.state.applyAction({ ...action, playerColor: color });
+    let snapshot = null;
+
+    if (action && action.type === 'sync_state') {
+      if (!(room.state instanceof FullSyncState)) {
+        room.state = new FullSyncState({
+          turnTimeMs: room.turnTimeMs,
+          snapshot: room.state && typeof room.state.snapshot === 'function' ? room.state.snapshot() : room.state
+        });
+      }
+      snapshot = room.state.applySyncState(action.snapshot || action.state || action.fullState);
+    } else {
+      snapshot = room.state.applyAction({ ...action, playerColor: color });
+    }
+
     room.updatedAt = now();
-    if (snapshot.phase === 'ended') room.phase = 'ended';
+    room.phase = snapshot.phase === 'ended' ? 'ended' : (room.players.white ? 'playing' : room.phase);
     log('APPLY_ACTION_SUCCESS', { roomId, playerId, color, phase: room.phase, snapshotVersion: snapshot.version, currentPlayer: snapshot.currentPlayer });
     return { room, color, snapshot };
   }
@@ -291,7 +373,7 @@ export default class RoomManager {
         black: room.players.black ? { playerId: room.players.black.playerId, online: !!room.players.black.online } : null,
         white: room.players.white ? { playerId: room.players.white.playerId, online: !!room.players.white.online } : null
       },
-      state: room.state.snapshot()
+      state: room.state && typeof room.state.snapshot === 'function' ? room.state.snapshot() : cloneData(room.state)
     };
   }
 
