@@ -9,6 +9,7 @@ import BoardSelectScene from './scene/board-select-scene';
 import CardSelectScene from './scene/card-select-scene';
 import VictorySelectScene from './scene/victory-select-scene';
 import OnlineScene from './scene/online-scene';
+import OnlineMatchScene from './scene/online-match-scene';
 import OnlineClient from './runtime/online-client';
 
 GameGlobal.musicManager = new Music();
@@ -30,7 +31,8 @@ export default class Main {
     );
 
     this.onlineClient = new OnlineClient();
-    this.onlineScene = new OnlineScene(this.sceneManager, this.onlineClient, this.goGameScene);
+    this.onlineMatchScene = new OnlineMatchScene(this.sceneManager, this.onlineClient);
+    this.onlineScene = new OnlineScene(this.sceneManager, this.onlineClient, this.onlineMatchScene);
 
     this.homeScene = new HomeScene(
       this.sceneManager,
@@ -41,6 +43,8 @@ export default class Main {
 
     this.tutorialScene.homeScene = this.homeScene;
     this.onlineScene.homeScene = this.homeScene;
+    this.onlineMatchScene.onlineLobbyScene = this.onlineScene;
+    this.onlineMatchScene.homeScene = this.homeScene;
     this.goGameScene.onlineScene = this.onlineScene;
     this.goGameScene.homeScene = this.homeScene;
     this.boardSelectScene.homeScene = this.homeScene;

@@ -384,16 +384,9 @@ export default class RoomManager {
     let snapshot = null;
 
     if (action && action.type === 'sync_state') {
-      if (!(room.state instanceof FullSyncState)) {
-        room.state = new FullSyncState({
-          turnTimeMs: room.turnTimeMs,
-          snapshot: room.state && typeof room.state.snapshot === 'function' ? room.state.snapshot() : room.state
-        });
-      }
-      snapshot = room.state.applySyncState(action.snapshot || action.state || action.fullState);
-    } else {
-      snapshot = room.state.applyAction({ ...action, playerColor: color });
+      throw new Error('新联机协议不再接受完整快照同步');
     }
+    snapshot = room.state.applyAction({ ...action, playerColor: color });
 
     room.updatedAt = now();
     room.phase = snapshot.phase === 'ended' ? 'ended' : (room.players.white ? 'playing' : room.phase);
