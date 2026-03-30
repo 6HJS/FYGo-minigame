@@ -29,6 +29,19 @@ function broadcastRoom(room, payload) {
   room.subscribers.forEach((ws) => safeJson(ws, payload));
 }
 
+function handleRoomHandshake(ws, roomId, trigger = 'handshake') {
+  const normalizedRoomId = String(roomId || '').trim().toUpperCase();
+  const auth = rooms.authenticateRoomPlayer(normalizedRoomId, ws.playerId, ws.playerToken);
+  rooms.attachSocketToPlayer(normalizedRoomId, auth.color, ws);
+  rooms.subscribeRoom(normalizedRoomId, ws);
+  ws.roomId = normalizedRoomId;
+  log('WS_ROOM_HANDSHAKE_SUCCESS', { trigger, roomId: normalizedRoomId, playerId: ws.playerId || null, color: auth.color, room: roomSummary(auth.room) });
+  safeJson(ws, { type: 'handshake_ack', roomId: normalizedRoomId, color: auth.color });
+  safeJson(ws, { type: 'room_joined', roomId: normalizedRoomId, color: auth.color });
+  safeJson(ws, { type: 'room_state', room: rooms.getRoomPublic(auth.room) });
+  broadcastRoom(auth.room, { type: 'presence', roomId: normalizedRoomId, playerId: ws.playerId, online: true });
+}
+
 app.get('/healthz', (req, res) => {
   log('HTTP_HEALTHZ', { ip: req.ip });
   res.json({ ok: true, now: Date.now() });
@@ -169,20 +182,20 @@ wss.on('connection', (ws, req) => {
         return;
       }
 
+      if (message.type === 'handshake') {
+        const roomId = String(message.roomId || ws.roomId || '').trim().toUpperCase();
+        if (!roomId) throw new Error('缺少房间号');
+        handleRoomHandshake(ws, roomId, 'message_handshake');
+        return;
+      }
+
       if (message.type === 'subscribe_room') {
         const roomId = String(message.roomId || '').trim().toUpperCase();
         if (ws.roomId && ws.roomId === roomId) {
           log('WS_SUBSCRIBE_ROOM_DUPLICATE_IGNORED', { roomId, playerId: ws.playerId || null });
           return;
         }
-        const auth = rooms.authenticateRoomPlayer(roomId, ws.playerId, ws.playerToken);
-        rooms.attachSocketToPlayer(roomId, auth.color, ws);
-        rooms.subscribeRoom(roomId, ws);
-        ws.roomId = roomId;
-        log('WS_SUBSCRIBE_ROOM_SUCCESS', { roomId, playerId: ws.playerId || null, color: auth.color, room: roomSummary(auth.room) });
-        safeJson(ws, { type: 'room_joined', roomId, color: auth.color });
-        safeJson(ws, { type: 'room_state', room: rooms.getRoomPublic(auth.room) });
-        broadcastRoom(auth.room, { type: 'presence', roomId, playerId: ws.playerId, online: true });
+        handleRoomHandshake(ws, roomId, 'message_subscribe_room');
         return;
       }
 
