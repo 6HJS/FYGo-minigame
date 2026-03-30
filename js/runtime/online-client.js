@@ -90,8 +90,6 @@ export default class OnlineClient {
     this.forceTakeover = !this.config || this.config.forceTakeover !== false;
     this.subscribedRoomId = '';
     this.subscribeInFlight = null;
-    this.roomSubscribeTimer = null;
-    this.roomSubscribeAttempts = 0;
     this.roomSubscribeResolve = null;
     debugLog('INIT', { httpBaseUrl: this.config && this.config.httpBaseUrl, wsUrl: this.config && this.config.wsUrl, useCloudContainerForHttp: !!(this.config && this.config.useCloudContainerForHttp), deviceId: this.deviceId, forceTakeover: this.forceTakeover });
   }
@@ -281,6 +279,7 @@ export default class OnlineClient {
       }
       debugLog('WS_CLOSE', { roomId: this.roomId || null, pendingMessages: this.pendingMessages.length, sessionId });
       this.stopHeartbeat();
+      const pendingReject = this.socketOpenReject;
       this.socketTask = null;
       this.isSocketOpen = false;
       this.wsConnectInFlight = false;
@@ -289,8 +288,8 @@ export default class OnlineClient {
       this.socketOpenReject = null;
       this.stopRoomSubscriptionLoop(false);
       this.subscribedRoomId = '';
-      if (this.socketOpenReject) {
-        try { this.socketOpenReject(new Error('WebSocket 已关闭')); } catch (err) {}
+      if (pendingReject) {
+        try { pendingReject(new Error('WebSocket 已关闭')); } catch (err) {}
       }
       this.socketOpenPromise = null;
       this.socketOpenResolve = null;
@@ -336,11 +335,11 @@ export default class OnlineClient {
       ).trim().toUpperCase();
       const expectedRoomId = String(this.desiredRoomId || this.roomId || '').trim().toUpperCase();
 
-      if (payload && payload.type === 'room_joined') {
+      if (payload && (payload.type === 'room_joined' || payload.type === 'handshake_ack')) {
         this.subscribedRoomId = payloadRoomId || expectedRoomId || '';
         this.desiredRoomId = this.subscribedRoomId || this.desiredRoomId || '';
         this.stopRoomSubscriptionLoop(true);
-        debugLog('WS_ROOM_JOINED_CONFIRMED', { roomId: this.subscribedRoomId || null, color: payload.color || null });
+        debugLog('WS_ROOM_HANDSHAKE_CONFIRMED', { roomId: this.subscribedRoomId || null, color: payload.color || null, type: payload.type });
       }
       if (payload && payload.type === 'room_state') {
         this.lastState = payload.room || null;
@@ -401,11 +400,6 @@ export default class OnlineClient {
   }
 
   stopRoomSubscriptionLoop(success = false) {
-    if (this.roomSubscribeTimer) {
-      clearInterval(this.roomSubscribeTimer);
-      this.roomSubscribeTimer = null;
-    }
-    this.roomSubscribeAttempts = 0;
     if (success && this.roomSubscribeResolve) {
       try {
         this.roomSubscribeResolve(true);
@@ -430,27 +424,13 @@ export default class OnlineClient {
       debugLog('ROOM_SUBSCRIBE_LOOP_WAIT_SOCKET', { roomId });
       return;
     }
-    const sendSubscribe = () => {
-      if (!this.isSocketOpen || !this.socketTask) return;
-      if (this.subscribedRoomId === roomId) {
-        this.stopRoomSubscriptionLoop(true);
-        return;
-      }
-      this.roomSubscribeAttempts += 1;
-      debugLog('ROOM_SUBSCRIBE_LOOP_SEND', { roomId, attempt: this.roomSubscribeAttempts });
-      this.send({ type: 'subscribe_room', roomId });
-      if (this.roomSubscribeAttempts >= 12) {
-        debugLog('ROOM_SUBSCRIBE_LOOP_MAX_ATTEMPTS', { roomId, attempts: this.roomSubscribeAttempts });
-        this.stopRoomSubscriptionLoop(false);
-      }
-    };
-    if (!this.roomSubscribeTimer) {
-      this.roomSubscribeAttempts = 0;
-      sendSubscribe();
-      this.roomSubscribeTimer = setInterval(sendSubscribe, 350);
-    } else {
-      sendSubscribe();
-    }
+    debugLog('ROOM_HANDSHAKE_SEND', { roomId });
+    this.send({
+      type: 'handshake',
+      roomId,
+      playerId: this.playerId,
+      playerToken: this.playerToken
+    });
   }
 
   async ensureRoomSubscribed(targetRoomId = this.roomId) {
