@@ -14,6 +14,7 @@ app.use(cors({ origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN }));
 app.use(express.json({ limit: '1mb' }));
 
 const rooms = new RoomManager({ roomExpireMs: ROOM_EXPIRE_MS, matchQueueExpireMs: MATCH_QUEUE_EXPIRE_MS });
+const activeSocketsByPlayer = new Map();
 
 function safeJson(ws, payload) {
   if (!ws || ws.readyState !== 1) {
@@ -131,7 +132,17 @@ wss.on('connection', (ws, req) => {
   ws.roomId = '';
   ws.isAlive = true;
 
-  log('WS_CONNECTION_OPEN', { playerId, playerTokenPresent: !!playerToken, remote: req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : null });
+  const previousWs = playerId ? activeSocketsByPlayer.get(playerId) : null;
+  if (previousWs && previousWs !== ws) {
+    try {
+      rooms.unsubscribeSocket(previousWs);
+      if (typeof previousWs.terminate === 'function') previousWs.terminate();
+      else if (typeof previousWs.close === 'function') previousWs.close(4001, 'replaced_by_new_connection');
+    } catch (err) {}
+  }
+  if (playerId) activeSocketsByPlayer.set(playerId, ws);
+
+  log('WS_CONNECTION_OPEN', { playerId, playerTokenPresent: !!playerToken, remote: req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : null, replacedExisting: !!previousWs });
   safeJson(ws, { type: 'hello', playerId });
   tryAutoSubscribe(ws, 'connection_open');
 
@@ -160,6 +171,10 @@ wss.on('connection', (ws, req) => {
 
       if (message.type === 'subscribe_room') {
         const roomId = String(message.roomId || '').trim().toUpperCase();
+        if (ws.roomId && ws.roomId === roomId) {
+          log('WS_SUBSCRIBE_ROOM_DUPLICATE_IGNORED', { roomId, playerId: ws.playerId || null });
+          return;
+        }
         const auth = rooms.authenticateRoomPlayer(roomId, ws.playerId, ws.playerToken);
         rooms.attachSocketToPlayer(roomId, auth.color, ws);
         rooms.subscribeRoom(roomId, ws);
@@ -188,6 +203,9 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    if (ws.playerId && activeSocketsByPlayer.get(ws.playerId) === ws) {
+      activeSocketsByPlayer.delete(ws.playerId);
+    }
     log('WS_CONNECTION_CLOSE', { playerId: ws.playerId || null, roomId: ws.roomId || null });
     const roomId = ws.roomId;
     const releasedRooms = rooms.unsubscribeSocket(ws);

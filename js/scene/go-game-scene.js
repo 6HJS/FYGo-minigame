@@ -1843,8 +1843,19 @@ export default class GoGameScene {
 
   handleOnlineClientStatus(payload) {
     if (!this.isOnlineMode || !payload) return;
-    if (payload.type === 'socket_close') this.statusMessage = '连接已断开，等待重连';
-    else if (payload.type === 'socket_error') this.statusMessage = '连接失败，请稍后重试';
+    if (payload.type === 'socket_close') {
+      this.statusMessage = '连接已断开，正在重连';
+      if (this.onlineClient && typeof this.onlineClient.fetchRoomState === 'function' && this.onlineRoomId) {
+        this.onlineClient.fetchRoomState(this.onlineRoomId).catch(() => {});
+      }
+    } else if (payload.type === 'socket_error') {
+      this.statusMessage = '连接波动，正在恢复';
+    } else if (payload.type === 'socket_recovered') {
+      this.statusMessage = `在线房间 ${this.onlineRoomId}｜连接已恢复`;
+      if (this.onlineClient && typeof this.onlineClient.fetchRoomState === 'function' && this.onlineRoomId) {
+        this.onlineClient.fetchRoomState(this.onlineRoomId).catch(() => {});
+      }
+    }
   }
 
   handleOnlineClientMessage(payload) {
@@ -1964,7 +1975,10 @@ export default class GoGameScene {
       this.onlinePendingMove = null;
       return true;
     } catch (err) {
-      this.statusMessage = `在线同步失败：${err && err.message ? err.message : '未知错误'}`;
+      this.statusMessage = `在线同步暂时失败：${err && err.message ? err.message : '未知错误'}，正在重试`;
+      if (this.onlineClient && this.onlineRoomId) {
+        this.onlineClient.fetchRoomState(this.onlineRoomId).catch(() => {});
+      }
       return false;
     }
   }

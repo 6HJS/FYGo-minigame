@@ -280,6 +280,8 @@ export default class RoomManager {
     const room = this.rooms.get(roomId);
     log('SUBSCRIBE_ROOM_REQUEST', { roomId, playerId: ws && ws.playerId ? ws.playerId : null, existingPlayerRoom: ws && ws.playerId ? (this.playerRoom.get(ws.playerId) || null) : null });
     if (!room) throw new Error('房间不存在');
+    this.detachOtherSocketsForPlayer(ws && ws.playerId ? ws.playerId : '', ws);
+    room.subscribers.delete(ws);
     room.subscribers.add(ws);
     log('SUBSCRIBE_ROOM', { roomId, playerId: ws.playerId || null, subscribers: room.subscribers.size });
     return room;
@@ -325,12 +327,49 @@ export default class RoomManager {
     return releasedRooms;
   }
 
+
+  detachOtherSocketsForPlayer(playerId, keepWs = null) {
+    if (!playerId) return 0;
+    let removed = 0;
+    for (const [scanRoomId, scanRoom] of this.rooms.entries()) {
+      for (const subscriber of Array.from(scanRoom.subscribers)) {
+        if (!subscriber || subscriber === keepWs) continue;
+        if (subscriber.playerId !== playerId) continue;
+        scanRoom.subscribers.delete(subscriber);
+        if (scanRoom.players.black && scanRoom.players.black.ws === subscriber) {
+          scanRoom.players.black.ws = null;
+          scanRoom.players.black.online = false;
+        }
+        if (scanRoom.players.white && scanRoom.players.white.ws === subscriber) {
+          scanRoom.players.white.ws = null;
+          scanRoom.players.white.online = false;
+        }
+        try {
+          subscriber.roomId = '';
+          if (typeof subscriber.terminate === 'function') subscriber.terminate();
+          else if (typeof subscriber.close === 'function') subscriber.close(4001, 'replaced_by_new_socket');
+        } catch (err) {}
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
   attachSocketToPlayer(roomId, color, ws) {
     const room = this.rooms.get(roomId);
     log('ATTACH_SOCKET_TO_PLAYER_REQUEST', { roomId, color, playerId: ws && ws.playerId ? ws.playerId : null, existingPlayerRoom: ws && ws.playerId ? (this.playerRoom.get(ws.playerId) || null) : null });
     if (!room) throw new Error('房间不存在');
     const seat = room.players[color];
     if (!seat) throw new Error('该座位没有玩家');
+
+    const removed = this.detachOtherSocketsForPlayer(ws && ws.playerId ? ws.playerId : '', ws);
+    if (removed) {
+      log('ATTACH_SOCKET_TO_PLAYER_CLEARED_OLD', { roomId, color, playerId: ws && ws.playerId ? ws.playerId : null, removed });
+    }
+    for (const scanRoom of this.rooms.values()) {
+      scanRoom.subscribers.delete(ws);
+    }
+
     seat.ws = ws;
     seat.online = true;
     room.subscribers.add(ws);

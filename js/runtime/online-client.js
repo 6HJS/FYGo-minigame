@@ -83,10 +83,12 @@ export default class OnlineClient {
     this.socketOpenPromise = null;
     this.socketOpenResolve = null;
     this.socketOpenReject = null;
+    this.wsConnectInFlight = false;
+    this.wsSessionId = 0;
+    this.socketErrorAfterOpenIgnored = 0;
     this.deviceId = getDeviceId();
     this.forceTakeover = !this.config || this.config.forceTakeover !== false;
     this.subscribedRoomId = '';
-    this.desiredRoomId = '';
     this.subscribeInFlight = null;
     this.roomSubscribeTimer = null;
     this.roomSubscribeAttempts = 0;
@@ -215,12 +217,29 @@ export default class OnlineClient {
   }
 
   async connectWebSocket() {
-    if (this.isSocketOpen) return;
-    if (this.socketOpenPromise) return this.socketOpenPromise;
+    if (this.isSocketOpen && this.socketTask) {
+      debugLog('WS_CONNECT_SKIP_ALREADY_OPEN', { roomId: this.roomId || null, sessionId: this.wsSessionId });
+      return true;
+    }
+    if (this.socketTask) {
+      if (this.socketOpenPromise) {
+        debugLog('WS_CONNECT_REUSE_PROMISE', { roomId: this.roomId || null, sessionId: this.wsSessionId });
+        return this.socketOpenPromise;
+      }
+      debugLog('WS_CONNECT_SKIP_EXISTING_SOCKET_TASK', { roomId: this.roomId || null, sessionId: this.wsSessionId, isSocketOpen: this.isSocketOpen });
+      return this.isSocketOpen;
+    }
+    if (this.wsConnectInFlight) {
+      debugLog('WS_CONNECT_SKIP_INFLIGHT', { roomId: this.roomId || null, sessionId: this.wsSessionId });
+      return this.socketOpenPromise || false;
+    }
     if (!wx || typeof wx.connectSocket !== 'function') {
       throw new Error('当前环境不支持 WebSocket');
     }
 
+    this.wsConnectInFlight = true;
+    this.wsSessionId += 1;
+    const sessionId = this.wsSessionId;
     this.socketOpenPromise = new Promise((resolve, reject) => {
       this.socketOpenResolve = resolve;
       this.socketOpenReject = reject;
@@ -228,12 +247,19 @@ export default class OnlineClient {
 
     const query = `playerId=${encodeURIComponent(this.playerId)}&playerToken=${encodeURIComponent(this.playerToken)}`;
     const url = `${this.config.wsUrl}?${query}`;
-    debugLog('WS_CONNECT_BEGIN', { url, playerId: this.playerId, roomId: this.roomId || null });
-    this.socketTask = wx.connectSocket({ url });
+    debugLog('WS_CONNECT_BEGIN', { url, playerId: this.playerId, roomId: this.roomId || null, sessionId });
+    const socketTask = wx.connectSocket({ url });
+    this.socketTask = socketTask;
 
-    this.socketTask.onOpen(() => {
+    socketTask.onOpen(() => {
+      if (sessionId !== this.wsSessionId || socketTask !== this.socketTask) {
+        debugLog('WS_OPEN_STALE_SESSION_IGNORED', { sessionId, activeSessionId: this.wsSessionId });
+        try { socketTask.close({ code: 1000, reason: 'stale_session' }); } catch (err) {}
+        return;
+      }
       this.isSocketOpen = true;
-      debugLog('WS_OPEN', { roomId: this.roomId || null, pendingMessages: this.pendingMessages.length });
+      this.wsConnectInFlight = false;
+      debugLog('WS_OPEN', { roomId: this.roomId || null, pendingMessages: this.pendingMessages.length, sessionId });
       this.emitStatus({ type: 'socket_open' });
       this.startHeartbeat();
       this.flushPendingMessages();
@@ -241,39 +267,60 @@ export default class OnlineClient {
         this.beginRoomSubscriptionLoop(this.desiredRoomId || this.roomId);
       }
       if (this.socketOpenResolve) {
-        this.socketOpenResolve();
+        this.socketOpenResolve(true);
       }
       this.socketOpenResolve = null;
       this.socketOpenReject = null;
       this.socketOpenPromise = null;
     });
 
-    this.socketTask.onClose(() => {
-      debugLog('WS_CLOSE', { roomId: this.roomId || null, pendingMessages: this.pendingMessages.length });
+    socketTask.onClose(() => {
+      if (sessionId !== this.wsSessionId || socketTask !== this.socketTask) {
+        debugLog('WS_CLOSE_STALE_SESSION_IGNORED', { sessionId, activeSessionId: this.wsSessionId });
+        return;
+      }
+      debugLog('WS_CLOSE', { roomId: this.roomId || null, pendingMessages: this.pendingMessages.length, sessionId });
       this.stopHeartbeat();
       this.socketTask = null;
       this.isSocketOpen = false;
+      this.wsConnectInFlight = false;
       this.socketOpenPromise = null;
       this.socketOpenResolve = null;
       this.socketOpenReject = null;
-      this.stopRoomSubscriptionLoop();
-      this.emitStatus({ type: 'socket_close' });
-    });
-
-    this.socketTask.onError((err) => {
-      this.lastError = 'WebSocket 连接失败';
-      debugLog('WS_ERROR', err || null);
-      this.isSocketOpen = false;
+      this.stopRoomSubscriptionLoop(false);
+      this.subscribedRoomId = '';
       if (this.socketOpenReject) {
-        this.socketOpenReject(err || new Error(this.lastError));
+        try { this.socketOpenReject(new Error('WebSocket 已关闭')); } catch (err) {}
       }
       this.socketOpenPromise = null;
       this.socketOpenResolve = null;
       this.socketOpenReject = null;
+      this.emitStatus({ type: 'socket_close' });
+    });
+
+    socketTask.onError((err) => {
+      if (sessionId !== this.wsSessionId || socketTask !== this.socketTask) {
+        debugLog('WS_ERROR_STALE_SESSION_IGNORED', { sessionId, activeSessionId: this.wsSessionId, error: err || null });
+        return;
+      }
+      if (this.isSocketOpen) {
+        this.socketErrorAfterOpenIgnored += 1;
+        debugLog('WS_ERROR_IGNORED_AFTER_OPEN', { sessionId, ignoredCount: this.socketErrorAfterOpenIgnored, error: err || null });
+        this.emitStatus({ type: 'socket_warning', error: err || null });
+        return;
+      }
+      this.lastError = 'WebSocket 连接失败';
+      debugLog('WS_ERROR_BEFORE_OPEN_WAIT_CLOSE', { sessionId, error: err || null });
+      // 某些端会先收到 error，随后才 close；这里不能立刻清空 socketTask 并重开新连接，
+      // 否则会产生并发连接风暴。真正的失效统一等 onClose 处理。
       this.emitStatus({ type: 'socket_error', error: err || null });
     });
 
-    this.socketTask.onMessage((res) => {
+    socketTask.onMessage((res) => {
+      if (sessionId !== this.wsSessionId || socketTask !== this.socketTask) {
+        debugLog('WS_MESSAGE_STALE_SESSION_IGNORED', { sessionId, activeSessionId: this.wsSessionId });
+        return;
+      }
       let payload = null;
       try {
         payload = JSON.parse(res.data);
@@ -315,6 +362,7 @@ export default class OnlineClient {
 
     return this.socketOpenPromise;
   }
+
 
 
   flushPendingMessages() {
@@ -485,6 +533,8 @@ export default class OnlineClient {
     this.socketOpenPromise = null;
     this.socketOpenResolve = null;
     this.socketOpenReject = null;
+    this.wsConnectInFlight = false;
+    this.wsSessionId += 1;
     const socketTask = this.socketTask;
     this.socketTask = null;
     if (socketTask && typeof socketTask.close === 'function') {

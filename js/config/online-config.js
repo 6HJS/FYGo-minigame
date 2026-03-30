@@ -1,6 +1,6 @@
 export const ONLINE_CONFIG = {
-  // 云托管正式服务
-  httpBaseUrl: 'https://fygo-prod-240108-10-1413448174.sh.run.tcloudbase.com',
+  // HTTP 走微信云托管内网 callContainer；这里只保留 WebSocket 公网地址
+  httpBaseUrl: '',
   wsUrl: 'wss://fygo-prod-240108-10-1413448174.sh.run.tcloudbase.com/ws',
 
   // 云开发 callContainer 配置（HTTP 请求优先走它，避免反复配白名单）
